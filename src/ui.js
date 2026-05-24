@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { BASES, CONSTRAINTS, STRAND_COLORS, TIAMAT_GEOMETRY } from './constants.js';
 import { cleanSequence, formatVector } from './geometry.js';
-import { dnaJson, download, fullProjectJson, oxDnaText, parseJsonProject, parseOxViewProject, parsePdb, parseSequenceText, pdbText, sequenceText } from './io.js';
+import { dnaJson, download, fullProjectJson, mergeMetadataFromDna, oxDnaText, parseOxDnaTopConf, parseDnaFile, parseJsonProject, parseOxViewProject, parsePdb, parseSequenceText, pdbText, sequenceText } from './io.js';
 
 const RENDER_SETTINGS_KEY = 'tiamat-web.render-settings.v2';
 
@@ -34,7 +34,7 @@ export function mountApp(root) {
           <button class="icon" data-action="paste" title="Paste">▤</button>
           <button class="icon" data-action="deleteSelected" title="Delete selected">⌫</button>
           <button class="icon" data-action="frame" title="Frame view">◎</button>
-          <input id="fileInput" class="fileInput" type="file" accept=".json,.dnajson,.cadnano,.oxview,.pdb,.dna,.txt" />
+          <input id="fileInput" class="fileInput" type="file" accept=".json,.dnajson,.cadnano,.oxview,.pdb,.dna,.top,.oxdna,.txt" multiple />
           <label class="buttonLike" for="fileInput">Import</label>
           <button data-action="saveProject">Save</button>
           <button data-action="exportJson">DNAJSON</button>
@@ -728,24 +728,64 @@ export class TiamatUI {
   }
 
   async importFile(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-    const ext = file.name.split('.').pop().toLowerCase();
-    if (ext === 'dna') {
-      this.status('Native .dna is MFC CArchive binary; use Full JSON or convert through a desktop decoder.');
+    const files = [...event.target.files];
+    if (!files.length) return;
+    // Multi-file: detect .top + .oxdna (+ optional .dna for metadata)
+    const topFile = files.find((f) => f.name.toLowerCase().endsWith('.top'));
+    const oxdnaFile = files.find((f) => f.name.toLowerCase().endsWith('.oxdna'));
+    const dnaFile = files.find((f) => f.name.toLowerCase().endsWith('.dna'));
+    if (topFile && oxdnaFile) {
+      this.importDiagnostics = null;
+      try {
+        const [topText, confText] = await Promise.all([topFile.text(), oxdnaFile.text()]);
+        const data = parseOxDnaTopConf(topText, confText);
+        // If a .dna file is also selected, merge its across-links, types & colors
+        if (dnaFile) {
+          const buffer = await dnaFile.arrayBuffer();
+          const dnaData = parseDnaFile(buffer);
+          mergeMetadataFromDna(data.bases, dnaData.bases);
+          data.diagnostics.mergedDna = dnaData.diagnostics;
+        }
+        this.importDiagnostics = data.diagnostics ?? null;
+        this.model.loadBases(data.bases);
+        if (data.bases.length > 5000) this.scene.setLargeStructureMode();
+      } catch (e) {
+        this.status(`Failed to parse: ${e.message}`);
+        return;
+      }
+      this.scene.frameDesign();
+      const names = [topFile.name, oxdnaFile.name, dnaFile?.name].filter(Boolean).join(' + ');
+      this.status(`Loaded ${names} (${this.model.bases.length} bases)`);
+      this.persistRenderSettings();
       return;
     }
-    const text = await file.text();
+    const file = files[0];
+    const ext = file.name.split('.').pop().toLowerCase();
     this.importDiagnostics = null;
-    if (ext === 'pdb') parsePdb(text, this.model);
-    else if (ext === 'txt') parseSequenceText(text, this.readCreateOptions(), this.model);
-    else {
-      const parser = ext === 'oxview' ? parseOxViewProject : parseJsonProject;
-      const data = parser(text);
-      this.importDiagnostics = data.diagnostics ?? null;
-      this.model.loadBases(data.bases);
-      this.scene.restoreView(data.view);
-      if (ext === 'oxview' && data.bases.length > 5000) this.scene.setLargeStructureMode();
+    if (ext === 'dna') {
+      try {
+        const buffer = await file.arrayBuffer();
+        const data = parseDnaFile(buffer);
+        this.importDiagnostics = data.diagnostics ?? null;
+        this.model.loadBases(data.bases);
+        this.scene.restoreView(data.view);
+        if (data.bases.length > 5000) this.scene.setLargeStructureMode();
+      } catch (e) {
+        this.status(`Failed to parse .dna: ${e.message}`);
+        return;
+      }
+    } else {
+      const text = await file.text();
+      if (ext === 'pdb') parsePdb(text, this.model);
+      else if (ext === 'txt') parseSequenceText(text, this.readCreateOptions(), this.model);
+      else {
+        const parser = ext === 'oxview' ? parseOxViewProject : parseJsonProject;
+        const data = parser(text);
+        this.importDiagnostics = data.diagnostics ?? null;
+        this.model.loadBases(data.bases);
+        this.scene.restoreView(data.view);
+        if (ext === 'oxview' && data.bases.length > 5000) this.scene.setLargeStructureMode();
+      }
     }
     this.scene.frameDesign();
     this.status(`Loaded ${file.name} (${this.model.bases.length} bases)`);

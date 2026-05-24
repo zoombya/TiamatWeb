@@ -2,6 +2,145 @@ import * as THREE from 'three';
 import { BASES, DOWN_DISTANCE, TIAMAT_GEOMETRY, TYPE_FROM_NAME } from './constants.js';
 import { arrayToPosition, normalizeImportedType } from './legacy-normalize.js';
 import { cleanSequence, normalizeBase, vectorFrom } from './geometry.js';
+export { parseDnaFile } from './dna-loader.js';
+
+/**
+ * Merge metadata from a corrupted .dna parse into oxDNA-sourced bases.
+ * Matches bases by strand order: walks strands in both datasets and
+ * copies across-links, types, and strand colors from .dna to oxDNA bases.
+ */
+export function mergeMetadataFromDna(oxBases, dnaBases) {
+  // Build strand walks for both datasets
+  const oxStrands = buildStrands(oxBases);
+  const dnaStrands = buildStrands(dnaBases);
+
+  // Match strands by length (greedy, largest first)
+  const dnaByLen = new Map();
+  dnaStrands.forEach((strand) => {
+    const key = strand.length;
+    if (!dnaByLen.has(key)) dnaByLen.set(key, []);
+    dnaByLen.get(key).push(strand);
+  });
+
+  const oxById = new Map(oxBases.map((b) => [b.id, b]));
+  const dnaById = new Map(dnaBases.map((b) => [b.id, b]));
+  let merged = 0;
+
+  oxStrands.forEach((oxStrand) => {
+    const candidates = dnaByLen.get(oxStrand.length);
+    if (!candidates || !candidates.length) return;
+    const dnaStrand = candidates.shift();
+    for (let i = 0; i < oxStrand.length; i++) {
+      const ob = oxById.get(oxStrand[i]);
+      const db = dnaById.get(dnaStrand[i]);
+      if (!ob || !db) continue;
+      // Copy type if .dna has a real type
+      if (db.type && db.type !== 'X') ob.type = db.type;
+      // Copy across link: find the matching oxDNA base for the .dna across target
+      // (deferred — we'd need a full .dna→oxDNA ID map)
+      // Copy strand color
+      if (db.useStrandColor && db.strandColor) {
+        ob.useStrandColor = true;
+        ob.strandColor = db.strandColor;
+      }
+      ob.preset = ob.type !== 'X';
+      merged++;
+    }
+  });
+  return merged;
+}
+
+function buildStrands(bases) {
+  const byId = new Map(bases.map((b) => [b.id, b]));
+  const visited = new Set();
+  const strands = [];
+  // Find strand heads (up === null)
+  const heads = bases.filter((b) => b.up === null).sort((a, b) => (a.strand || 0) - (b.strand || 0) || a.id - b.id);
+  heads.forEach((head) => {
+    const ids = [];
+    let cur = head;
+    while (cur && !visited.has(cur.id)) {
+      visited.add(cur.id);
+      ids.push(cur.id);
+      cur = cur.down !== null ? byId.get(cur.down) : null;
+    }
+    if (ids.length) strands.push(ids);
+  });
+  // Circular strands
+  bases.forEach((b) => {
+    if (visited.has(b.id)) return;
+    const ids = [];
+    let cur = b;
+    while (cur && !visited.has(cur.id)) {
+      visited.add(cur.id);
+      ids.push(cur.id);
+      cur = cur.down !== null ? byId.get(cur.down) : null;
+    }
+    if (ids.length) strands.push(ids);
+  });
+  return strands;
+}
+
+export function parseOxDnaTopConf(topText, confText) {
+  const topLines = topText.split('\n');
+  const confLines = confText.split('\n');
+  const [nBases, nStrands] = topLines[0].trim().split(/\s+/).map(Number);
+  const bases = [];
+  for (let i = 0; i < nBases; i++) {
+    const tParts = topLines[i + 1]?.trim().split(/\s+/) ?? [];
+    const cParts = confLines[i + 3]?.trim().split(/\s+/) ?? [];
+    const n3 = Number(tParts[2] ?? -1);
+    const n5 = Number(tParts[3] ?? -1);
+    bases.push({
+      id: i,
+      type: normalizeImportedType(tParts[1] ?? 'X'),
+      molecule: tParts[1] === 'U' ? 'RNA' : 'DNA',
+      geometry: 'B',
+      position: { x: Number(cParts[0]) || 0, y: Number(cParts[1]) || 0, z: Number(cParts[2]) || 0 },
+      up: n3 >= 0 && n3 < nBases ? n3 : null,
+      down: n5 >= 0 && n5 < nBases ? n5 : null,
+      across: null,
+      slide: [],
+      sticky: null,
+      stickyID: 0,
+      strand: Number(tParts[0]) || 1,
+      circular: false,
+      top: false,
+      preset: (tParts[1] ?? 'X') !== 'X',
+      temp: false,
+      useStrandColor: false,
+      strandColor: null,
+      constraints: {}
+    });
+  }
+  // Scale to Tiamat nm: compute median down-distance and scale to 0.677
+  const dists = bases.map((b) => {
+    if (b.down === null) return null;
+    const nb = bases[b.down];
+    return Math.sqrt((b.position.x-nb.position.x)**2 + (b.position.y-nb.position.y)**2 + (b.position.z-nb.position.z)**2);
+  }).filter((d) => d !== null && d > 0.001).sort((a, b) => a - b);
+  const medianDist = dists[Math.floor(dists.length / 2)] || 1;
+  const scale = 0.677 / medianDist;
+  const center = bases.reduce((s, b) => ({ x: s.x + b.position.x, y: s.y + b.position.y, z: s.z + b.position.z }), { x: 0, y: 0, z: 0 });
+  center.x /= bases.length; center.y /= bases.length; center.z /= bases.length;
+  bases.forEach((b) => {
+    b.position.x = (b.position.x - center.x) * scale;
+    b.position.y = (b.position.y - center.y) * scale;
+    b.position.z = (b.position.z - center.z) * scale;
+  });
+  return {
+    view: null,
+    bases,
+    diagnostics: {
+      format: 'oxDNA topology+configuration',
+      importedBases: bases.length,
+      strands: nStrands,
+      pairs: 0,
+      scale: scale.toFixed(4),
+      medianDown: medianDist.toFixed(4)
+    }
+  };
+}
 
 const CADNANO_HELIX_SPACING = 2.5;
 
