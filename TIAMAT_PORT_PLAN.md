@@ -105,13 +105,16 @@ Last updated: 2026-05-23
   - RNA and DNA now share the same sphere marker behavior; RNA-specific cube rendering was removed because it did not match expected interaction/visual parity.
 - [ ] Tiamat schematic views:
   - Current simplification is based on the original algorithm but has not been visually validated against original Tiamat for long helices, crossovers, and multi-helix bundles.
-  - Need exact handling of all original `simpleNext`, `displace`, drawn-state, distance gating, and transition connector cases.
+  - [x] Ported the original `simpleNext`, `displace`, drawn-state, distance gating, upward endpoint walk, and down-transition connector behavior from `DNADoc.cpp`/`RenderFunctions.cpp`.
   - [x] Added schematic display controls separated from detailed molecular rendering: Detailed, Mixed, and Schematic.
+  - [x] Render original Tiamat schematic line segments as instanced cylinder geometry in line mode so long helices keep visible thickness instead of browser-limited 1px lines.
+  - [x] For cadnano imports, prevent virtual-helix crossovers from being accepted as ordinary simplified-run backbone steps so the original transition connector pass can collapse them toward schematic centers.
 - [ ] Interaction feel:
   - Selection modes exist, but the original's click/drag phases, modifier semantics, and status feedback are only approximated.
   - [x] Added explicit original-style left-click mode controls: `DoNothing`, `SelectStrand`, `SelectHalfStrand`, `SelectBasePair`, `SelectBase`, `SelectBox`, `CreateStrand`, `CreateFreeform`, `Position`, `Rotation`.
   - [x] Added persistent replace/add/subtract selection operation based on Tiamat's `selectionOffset` behavior.
   - [x] Added keyboard bindings for common Tiamat/editor actions, including `t` for move gizmo and `r` for rotate gizmo.
+  - [x] Added and browser-verified `l` for ligation and `n` for nicking shortcuts.
   - [x] Preserve the last selected selection tool while temporary transform modes are active, and resync toolbar selected states after model redraws.
   - [x] Make selected base/phosphate/strand highlight part of the render signature so selection styling persists through redraws, schematic toggles, and line/cylinder rebuilds.
 - [ ] Constraint-respecting manipulation:
@@ -124,6 +127,8 @@ Last updated: 2026-05-23
   - Full original Tiamat save/load compatibility remains the biggest file-format gap.
   - PDB and oxDNA exports are approximate and need source-compatible topology/orientation output.
   - oxView import preserves orientation metadata but does not yet use it to render base normals or nucleobase direction.
+  - [x] Added cadnano v2 JSON import based on scadnano/cadnano v2 graph semantics: `vstrands`, scaffold/staple four-tuples, row/col grid placement, scaffold/staple pairing, staple colors, loops/skips diagnostics.
+  - [x] Cadnano coordinates now come from full Tiamat B-form virtual helix templates: Tiamat axial rise, Tiamat opposite-strand phase, and per-helix roll inferred from crossover endpoints before nick/ligation/deletion graph links are applied.
 - [ ] Performance:
   - Rendering uses instanced meshes for bases/phosphates and cylinders, but line geometry is rebuilt on each model update.
   - Need profiling for designs above 50k bases.
@@ -136,6 +141,7 @@ Last updated: 2026-05-23
   - [x] Removed redundant second selection command panel; inspector now focuses on selection properties.
   - [x] Simplified modern workbench chrome with one top mode strip, compact command/view/file strips, collapsible tool groups, and selection-specific inspector actions.
   - [x] Persist render controls across page reloads, including schematic mode, line widths, connection style, visibility toggles, and constraint display.
+  - [x] Updated fresh render defaults to cylinders, strand line width 5, and pair line width 3.
   - Need original toolbar icons and exact command/menu naming.
   - [x] Clarified distinction between global render settings, selection properties, and active tool/create settings.
 
@@ -281,10 +287,12 @@ Last updated: 2026-05-23
    - [ ] Match original material/lighting by visual comparison.
 
 3. **Port Tiamat schematic mode exactly**
-   - [ ] Translate `DNADoc.cpp` simplification preprocessing into a dedicated module.
-   - [ ] Translate `RenderFunctions.cpp` schematic draw pass into a dedicated renderer.
-   - [x] Add separate schematic display controls for detailed/mixed/schematic rendering.
-   - [ ] Validate on straight duplexes, bundles, crossovers, and imported oxView structures.
+  - [ ] Translate `DNADoc.cpp` simplification preprocessing into a dedicated module.
+  - [ ] Translate `RenderFunctions.cpp` schematic draw pass into a dedicated renderer.
+  - [x] Add separate schematic display controls for detailed/mixed/schematic rendering.
+  - [x] Draw original simplified line segments through the cylinder instancing path while retaining line-mode controls.
+  - [x] Break cadnano simplified runs at crossovers while preserving the original Tiamat transition connector behavior.
+  - [ ] Validate on straight duplexes, bundles, crossovers, and imported oxView structures.
 
 4. **Port original interaction modes**
    - [ ] Add explicit state machine for Tiamat left-click modes.

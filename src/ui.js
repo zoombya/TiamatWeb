@@ -3,7 +3,7 @@ import { BASES, CONSTRAINTS, STRAND_COLORS, TIAMAT_GEOMETRY } from './constants.
 import { cleanSequence, formatVector } from './geometry.js';
 import { dnaJson, download, fullProjectJson, oxDnaText, parseJsonProject, parseOxViewProject, parsePdb, parseSequenceText, pdbText, sequenceText } from './io.js';
 
-const RENDER_SETTINGS_KEY = 'tiamat-web.render-settings.v1';
+const RENDER_SETTINGS_KEY = 'tiamat-web.render-settings.v2';
 
 export function mountApp(root) {
   root.innerHTML = `
@@ -34,7 +34,7 @@ export function mountApp(root) {
           <button class="icon" data-action="paste" title="Paste">▤</button>
           <button class="icon" data-action="deleteSelected" title="Delete selected">⌫</button>
           <button class="icon" data-action="frame" title="Frame view">◎</button>
-          <input id="fileInput" class="fileInput" type="file" accept=".json,.dnajson,.oxview,.pdb,.dna,.txt" />
+          <input id="fileInput" class="fileInput" type="file" accept=".json,.dnajson,.cadnano,.oxview,.pdb,.dna,.txt" />
           <label class="buttonLike" for="fileInput">Import</label>
           <button data-action="saveProject">Save</button>
           <button data-action="exportJson">DNAJSON</button>
@@ -83,8 +83,8 @@ export function mountApp(root) {
           <summary><h2>Render</h2></summary>
           <label>Connections</label>
           <div class="segmented" aria-label="Connection mode">
-            <button class="selected" data-connection-mode="lines">Lines</button>
-            <button data-connection-mode="cylinders">Cylinders</button>
+            <button data-connection-mode="lines">Lines</button>
+            <button class="selected" data-connection-mode="cylinders">Cylinders</button>
           </div>
           <label>Schematic simplification</label>
           <div class="segmented" aria-label="Schematic display">
@@ -94,19 +94,19 @@ export function mountApp(root) {
           </div>
           <div class="segmented" aria-label="Simplify mode">
             <button data-simplify-mode="always">Always</button>
-            <button class="selected" data-simplify-mode="sometimes">Sometimes</button>
-            <button data-simplify-mode="never">Never</button>
+            <button data-simplify-mode="sometimes">Sometimes</button>
+            <button class="selected" data-simplify-mode="never">Never</button>
           </div>
           <label>Strand lines</label>
           <div class="segmented" aria-label="Strand line width">
-            <button class="selected" data-line-width="1">1</button>
+            <button data-line-width="1">1</button>
             <button data-line-width="3">3</button>
-            <button data-line-width="5">5</button>
+            <button class="selected" data-line-width="5">5</button>
           </div>
           <label>Pair lines</label>
           <div class="segmented" aria-label="Pair line width">
-            <button class="selected" data-base-line-width="1">1</button>
-            <button data-base-line-width="3">3</button>
+            <button data-base-line-width="1">1</button>
+            <button class="selected" data-base-line-width="3">3</button>
             <button data-base-line-width="5">5</button>
           </div>
           <label class="checkline"><input type="checkbox" data-render-visible="grid" checked> Grid</label>
@@ -295,6 +295,7 @@ export class TiamatUI {
     this.importDiagnostics = null;
     this.bind();
     this.restoreRenderSettings();
+    this.syncRenderButtons(this.scene.renderSettings());
     this.update();
   }
 
@@ -817,12 +818,18 @@ export class TiamatUI {
       return;
     }
     const d = this.importDiagnostics;
-    target.innerHTML = [
+    const lines = [
       `<strong>${d.format} import</strong>`,
-      `<span>${d.importedBases} bases · ${d.strands} strands · ${d.pairs} pairs</span>`,
-      `<span>${d.pairFields} pair fields · ${d.unresolvedPairs} unresolved</span>`,
-      `<span>scale ${formatNumber(d.importScale)} · original down ${formatNumber(d.medianOriginalDownDistance)}</span>`
-    ].join('');
+      `<span>${d.importedBases} bases · ${d.strands} strands · ${d.pairs} pairs</span>`
+    ];
+    if (d.format === 'cadnano v2') {
+      lines.push(`<span>${d.helices} helices · ${d.grid} grid · ${d.numBases} offsets</span>`);
+      lines.push(`<span>${d.skippedOffsets} deletions · ${d.insertionCount} insertion bases</span>`);
+    } else {
+      lines.push(`<span>${d.pairFields} pair fields · ${d.unresolvedPairs} unresolved</span>`);
+      lines.push(`<span>scale ${formatNumber(d.importScale)} · original down ${formatNumber(d.medianOriginalDownDistance)}</span>`);
+    }
+    target.innerHTML = lines.join('');
   }
 
   persistRenderSettings() {

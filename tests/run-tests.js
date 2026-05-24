@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import * as THREE from 'three';
 import { TiamatModel } from '../src/model.js';
-import { DOWN_DISTANCE } from '../src/constants.js';
+import { DOWN_DISTANCE, TIAMAT_GEOMETRY } from '../src/constants.js';
 import { vectorFrom } from '../src/geometry.js';
 import { fullProjectJson, parseJsonProject, parseOxViewProject } from '../src/io.js';
 import { ScreenSelectionIndex } from '../src/selection-index.js';
+import { isSchematicRunNeighbor } from '../src/scene.js';
 
 const OXVIEW_FIXTURE = '/Users/m.matthies/Data/Dietz_Designs/oxview/42hb_v40_polyT.oxview';
 const tests = [];
@@ -193,6 +194,58 @@ test('oxView parser accepts both pair and bp fields', () => {
   const model = new TiamatModel();
   model.loadBases(data.bases);
   assert.equal(model.bases.filter((base) => base.across !== null).length / 2, 2);
+});
+
+test('cadnano v2 JSON imports scaffold/staple graph and colors', () => {
+  const cadnano = JSON.stringify({
+    name: 'mini cadnano',
+    vstrands: [{
+      num: 0,
+      row: 0,
+      col: 0,
+      scaf: [[-1, -1, 0, 1], [0, 0, -1, -1]],
+      stap: [[0, 1, -1, -1], [-1, -1, 0, 0]],
+      loop: [0, 2],
+      skip: [0, 0],
+      stap_colors: [[1, 0x00ff00]],
+      scafLoop: [],
+      stapLoop: []
+    }]
+  });
+  const data = parseJsonProject(cadnano);
+  assert.equal(data.diagnostics.format, 'cadnano v2');
+  assert.equal(data.bases.length, 4);
+  assert.equal(data.diagnostics.insertionCount, 2);
+  const scaf0 = data.bases.find((base) => base.sourceCadnano.kind === 'scaf' && base.sourceCadnano.offset === 0);
+  const scaf1 = data.bases.find((base) => base.sourceCadnano.kind === 'scaf' && base.sourceCadnano.offset === 1);
+  const stap0 = data.bases.find((base) => base.sourceCadnano.kind === 'stap' && base.sourceCadnano.offset === 0);
+  const stap1 = data.bases.find((base) => base.sourceCadnano.kind === 'stap' && base.sourceCadnano.offset === 1);
+  assert.equal(scaf0.down, scaf1.id);
+  assert.equal(scaf1.up, scaf0.id);
+  assert.equal(stap1.down, stap0.id);
+  assert.equal(stap0.up, stap1.id);
+  assert.equal(scaf0.across, stap0.id);
+  assert.equal(stap1.across, scaf1.id);
+  assert.equal(stap0.strandColor, '#00ff00');
+  assert.ok(Math.abs((scaf1.position.y - scaf0.position.y) - TIAMAT_GEOMETRY.B.rise) < 0.000001);
+  const chord = vectorFrom(scaf0.position).distanceTo(vectorFrom(stap0.position));
+  const expectedChord = 2 * TIAMAT_GEOMETRY.B.radius * Math.sin(Math.abs(THREE.MathUtils.degToRad(TIAMAT_GEOMETRY.B.oppositeDeg)) / 2);
+  assert.ok(Math.abs(chord - expectedChord) < 0.000001);
+});
+
+test('cadnano schematic run detection treats virtual-helix crossovers as run breaks', () => {
+  const sameHelix = {
+    sourceCadnano: { kind: 'scaf', helix: 0, offset: 10 }
+  };
+  assert.equal(isSchematicRunNeighbor(sameHelix, {
+    sourceCadnano: { kind: 'scaf', helix: 0, offset: 11 }
+  }), true);
+  assert.equal(isSchematicRunNeighbor(sameHelix, {
+    sourceCadnano: { kind: 'scaf', helix: 1, offset: 10 }
+  }), false);
+  assert.equal(isSchematicRunNeighbor(sameHelix, {
+    sourceCadnano: { kind: 'stap', helix: 0, offset: 11 }
+  }), false);
 });
 
 test('screen selection index returns bases inside a view rectangle', () => {

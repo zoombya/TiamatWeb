@@ -77,12 +77,12 @@ export class TiamatScene extends EventTarget {
     this.raycaster = new THREE.Raycaster();
     this.pointer = new THREE.Vector2();
     this.baseIdByInstance = [];
-    this.lineWidth = 1;
-    this.baseLineWidth = 1;
-    this.cylinderWidth = WIDTH_TO_RADIUS[3];
+    this.lineWidth = 5;
+    this.baseLineWidth = 3;
+    this.cylinderWidth = WIDTH_TO_RADIUS[5];
     this.baseCylinderWidth = WIDTH_TO_RADIUS[3];
-    this.connectionMode = 'lines';
-    this.simplifyMode = 'sometimes';
+    this.connectionMode = 'cylinders';
+    this.simplifyMode = 'never';
     this.schematicDisplay = 'mixed';
     this.showPairs = true;
     this.showSlides = true;
@@ -186,7 +186,7 @@ export class TiamatScene extends EventTarget {
   }
 
   makeConnectionCylinders(color = 0xffffff) {
-    const material = new THREE.MeshPhongMaterial({ color, vertexColors: true, shininess: 1 });
+    const material = new THREE.MeshBasicMaterial({ color, vertexColors: true });
     const mesh = new THREE.InstancedMesh(this.connectionCylinderGeometry, material, 1);
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.raycast = () => {};
@@ -422,7 +422,8 @@ export class TiamatScene extends EventTarget {
       const selected = this.model.selectedIds.has(base.id);
       const hidden = this.schematic.hiddenIds.has(base.id);
       const schematicOnly = this.schematicDisplay === 'schematic' && this.schematic.segments.length > 0;
-      const hideDetailedMarker = (hidden || schematicOnly) && !selected;
+      const tiamatFarLineMarker = this.connectionMode === 'lines' && cameraDistanceSq(this.camera, base) > 1000;
+      const hideDetailedMarker = (hidden || schematicOnly || tiamatFarLineMarker) && !selected;
       const scale = hideDetailedMarker ? 0.0001 : selected ? SELECTED_SCALE : 1;
       matrix.compose(baseSitePosition(base), new THREE.Quaternion(), new THREE.Vector3(scale, scale, scale));
       this.baseMesh.setMatrixAt(index, matrix);
@@ -449,6 +450,7 @@ export class TiamatScene extends EventTarget {
     const strand = [];
     const strandColors = [];
     const strandSegments = [];
+    const schematicSegments = [];
     const pair = [];
     const pairSegments = [];
     const slide = [];
@@ -460,11 +462,14 @@ export class TiamatScene extends EventTarget {
       pushPoints(strand, segment.start, segment.end);
       const color = new THREE.Color(this.model.displayColor(segment.base));
       strandColors.push(color.r, color.g, color.b, color.r, color.g, color.b);
+      schematicSegments.push({ start: segment.start, end: segment.end, color });
     });
     this.model.bases.forEach((base) => {
       if (this.schematic.hiddenIds.has(base.id) && !this.model.selectedIds.has(base.id)) return;
       if (base.down !== null) pushColoredSegment(strand, strandColors, strandSegments, base, this.model.getBase(base.down), this.model);
-      if (this.showPairs && base.across !== null) pushUniquePair(pair, pairSegments, seen, 'a', base, this.model.getBase(base.across), this.model);
+      if (this.showPairs && base.across !== null && this.shouldDrawPairLine(base, this.model.getBase(base.across))) {
+        pushUniquePair(pair, pairSegments, seen, 'a', base, this.model.getBase(base.across), this.model);
+      }
       if (this.showSlides) (base.slide ?? []).forEach((id) => pushUnique(slide, slideSegments, seen, 's', base, this.model.getBase(id), new THREE.Color(0x808080), this.model));
       if (this.showSticky && base.sticky !== null) pushUnique(sticky, stickySegments, seen, 'k', base, this.model.getBase(base.sticky), new THREE.Color(0x66d9e8), this.model);
     });
@@ -474,10 +479,18 @@ export class TiamatScene extends EventTarget {
     this.setLinePositions(this.stickyLines, sticky);
     this.rebuildVolatileLineOverlays();
     const showCylinders = this.connectionMode === 'cylinders';
-    this.setCylinderSegments(this.strandCylinders, showCylinders ? strandSegments : [], this.cylinderWidth);
+    this.setCylinderSegments(this.strandCylinders, showCylinders ? strandSegments : schematicSegments, this.cylinderWidth);
     this.setCylinderSegments(this.pairCylinders, showCylinders ? pairSegments : [], this.baseCylinderWidth);
     this.setCylinderSegments(this.slideCylinders, showCylinders ? slideSegments : [], this.cylinderWidth);
     this.setCylinderSegments(this.stickyCylinders, showCylinders ? stickySegments : [], this.cylinderWidth);
+  }
+
+  shouldDrawPairLine(base, across) {
+    if (!base || !across) return false;
+    if (this.schematicDisplay !== 'schematic') return true;
+    if (this.schematic.hiddenIds.has(base.id) || this.schematic.hiddenIds.has(across.id)) return false;
+    if (this.simplifyMode === 'always') return false;
+    return !(this.connectionMode === 'lines' && (cameraDistanceSq(this.camera, base) > 1000 || cameraDistanceSq(this.camera, across) > 1000));
   }
 
   connectionSignature() {
@@ -610,7 +623,7 @@ export class TiamatScene extends EventTarget {
       let more = true;
       while (state.get(current.id)?.simpleNext === null && more && current.across !== null && (
         current.up !== null
-          ? this.model.getBase(current.up)?.across !== null && this.model.getBase(this.model.getBase(current.up)?.across)?.up === current.across
+          ? isSchematicRunNeighbor(current, this.model.getBase(current.up)) && this.model.getBase(current.up)?.across !== null && this.model.getBase(this.model.getBase(current.up)?.across)?.up === current.across
           : true
       )) {
         if (current.up !== null) current = this.model.getBase(current.up);
@@ -627,7 +640,7 @@ export class TiamatScene extends EventTarget {
       let count = 0;
       while (state.get(current.id)?.simpleNext === null && more && current.across !== null && (
         current.down !== null
-          ? this.model.getBase(current.down)?.across !== null && this.model.getBase(this.model.getBase(current.down)?.across)?.down === current.across
+          ? isSchematicRunNeighbor(current, this.model.getBase(current.down)) && this.model.getBase(current.down)?.across !== null && this.model.getBase(this.model.getBase(current.down)?.across)?.down === current.across
           : true
       )) {
         if (current.down !== null) current = this.model.getBase(current.down);
@@ -694,34 +707,61 @@ export class TiamatScene extends EventTarget {
     this.model.bases.forEach((base) => {
       const item = state.get(base.id);
       if (!item || drawn.has(base.id) || item.simpleNext === null) return;
-      const shouldSimplify = this.simplifyMode === 'always' || vectorFrom(base.position).distanceTo(this.camera.position) >= Math.sqrt(1000);
+      const shouldSimplify = this.simplifyMode === 'always' || cameraDistanceSq(this.camera, base) >= 1000;
       if (!shouldSimplify) return;
-      const end = this.model.getBase(item.simpleNext);
+
+      let current = base;
+      let limit = false;
+      while (current.up !== null && !drawn.has(current.up) && state.get(current.up)?.simpleNext === state.get(current.id)?.simpleNext && !limit) {
+        const up = this.model.getBase(current.up);
+        if (!up) break;
+        if (this.simplifyMode === 'sometimes' && cameraDistanceSq(this.camera, up) < 1000) limit = true;
+        else current = up;
+      }
+
+      const currentState = state.get(current.id);
+      if (!currentState?.simpleNext) return;
+      let end = this.model.getBase(currentState.simpleNext);
       if (!end) return;
+      limit = this.simplifyMode === 'always';
+      while (end.up !== null && !drawn.has(end.up) && end.id !== current.id && !limit) {
+        const up = this.model.getBase(end.up);
+        if (!up) break;
+        if (cameraDistanceSq(this.camera, up) >= 1000) limit = true;
+        else end = up;
+      }
+
       const endState = state.get(end.id);
       segments.push({
-        base,
-        start: item.centerPosition.clone().add(item.displace),
-        end: endState.centerPosition.clone().add(item.displace)
+        base: current,
+        start: currentState.centerPosition.clone().add(currentState.displace),
+        end: endState.centerPosition.clone().add(currentState.displace)
       });
-      let current = base;
-      while (current && current.id !== end.id) {
-        hiddenIds.add(current.id);
-        drawn.add(current.id);
-        current = this.model.getBase(current.down);
+
+      if (end.down !== null) {
+        const down = this.model.getBase(end.down);
+        if (down) {
+          const downState = state.get(down.id);
+          const downIsSimplified = downState?.simpleNext !== null && (this.simplifyMode === 'always' || cameraDistanceSq(this.camera, down) >= 1000);
+          segments.push({
+            base: current,
+            start: endState.centerPosition.clone().add(currentState.displace),
+            end: downIsSimplified
+              ? downState.centerPosition.clone().add(downState.displace)
+              : vectorFrom(down.position)
+          });
+        }
+      }
+
+      let mark = current;
+      while (mark && mark.id !== end.id) {
+        hiddenIds.add(mark.id);
+        drawn.add(mark.id);
+        mark = this.model.getBase(mark.down);
       }
       hiddenIds.add(end.id);
       drawn.add(end.id);
     });
-    if (segments.length === 0 && this.schematicDisplay === 'schematic') {
-      this.model.strands().forEach((strand) => {
-        if (strand.length < 2) return;
-        const start = strand[0];
-        const end = strand[strand.length - 1];
-        segments.push({ base: start, start: baseSitePosition(start), end: baseSitePosition(end) });
-        strand.forEach((base) => hiddenIds.add(base.id));
-      });
-    }
     return { hiddenIds, segments };
   }
 
@@ -759,17 +799,19 @@ export class TiamatScene extends EventTarget {
     const quaternion = new THREE.Quaternion();
     const yAxis = new THREE.Vector3(0, 1, 0);
     const scale = new THREE.Vector3();
-    segments.forEach((segment, index) => {
+    let written = 0;
+    segments.forEach((segment) => {
       const direction = segment.end.clone().sub(segment.start);
       const length = direction.length();
       if (length <= 0.0001) return;
       quaternion.setFromUnitVectors(yAxis, direction.clone().normalize());
       scale.set(radius, length, radius);
       matrix.compose(segment.start, quaternion, scale);
-      mesh.setMatrixAt(index, matrix);
-      mesh.setColorAt(index, segment.color);
+      mesh.setMatrixAt(written, matrix);
+      mesh.setColorAt(written, segment.color);
+      written += 1;
     });
-    mesh.count = segments.length;
+    mesh.count = written;
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }
@@ -789,6 +831,7 @@ export class TiamatScene extends EventTarget {
   rebuildPrimeLabels() {
     this.model.bases.forEach((base) => {
       if (this.schematic.hiddenIds.has(base.id)) return;
+      if (this.connectionMode === 'lines' && cameraDistanceSq(this.camera, base) > 1000) return;
       if (base.up === null) {
         const label = makeLabel("5'");
         label.position.copy(baseSitePosition(base)).add(new THREE.Vector3(0, 0.34, 0));
@@ -810,7 +853,10 @@ export class TiamatScene extends EventTarget {
     this.camera.position.copy(center).add(new THREE.Vector3(frameSize * 0.55, frameSize * 0.48, frameSize * 0.78));
     this.camera.near = 0.01;
     this.camera.far = Math.max(size * 10, frameSize * 12);
+    this.camera.lookAt(center);
     this.camera.updateProjectionMatrix();
+    this.camera.updateMatrixWorld();
+    this.controls.update();
     Object.values(this.orthoControls).forEach((control) => {
       control.target = center.clone();
       control.zoom = 1;
@@ -844,7 +890,10 @@ export class TiamatScene extends EventTarget {
     if (view.camera && view.target) {
       this.camera.position.fromArray(view.camera);
       this.controls.target.fromArray(view.target);
+      this.camera.lookAt(this.controls.target);
       this.camera.updateProjectionMatrix();
+      this.camera.updateMatrixWorld();
+      this.controls.update();
     }
     if (view.mode) this.viewMode = view.mode;
     if (view.activeView) this.activeView = view.activeView;
@@ -1622,6 +1671,20 @@ function fallbackRotationAngle(event, gesture) {
   const dx = event.clientX - gesture.startX;
   const dy = event.clientY - gesture.startY;
   return (dx - dy) * 0.01;
+}
+
+function cameraDistanceSq(camera, base) {
+  return camera.position.distanceToSquared(vectorFrom(base.position));
+}
+
+export function isSchematicRunNeighbor(base, neighbor) {
+  if (!base || !neighbor) return false;
+  const source = base.sourceCadnano;
+  const nextSource = neighbor.sourceCadnano;
+  if (!source || !nextSource) return true;
+  return source.kind === nextSource.kind
+    && source.helix === nextSource.helix
+    && Math.abs(source.offset - nextSource.offset) === 1;
 }
 
 function setWhiteVertexColors(geometry) {

@@ -1,7 +1,9 @@
 import * as THREE from 'three';
-import { BASES, DOWN_DISTANCE, TYPE_FROM_NAME } from './constants.js';
+import { BASES, DOWN_DISTANCE, TIAMAT_GEOMETRY, TYPE_FROM_NAME } from './constants.js';
 import { arrayToPosition, normalizeImportedType } from './legacy-normalize.js';
 import { cleanSequence, normalizeBase, vectorFrom } from './geometry.js';
+
+const CADNANO_HELIX_SPACING = 2.5;
 
 export function fullProjectJson(model, view = null) {
   return JSON.stringify({
@@ -67,6 +69,7 @@ export function oxDnaText(model) {
 export function parseJsonProject(text) {
   const data = JSON.parse(text);
   if (Array.isArray(data.systems)) return parseOxViewProjectData(data);
+  if (Array.isArray(data.vstrands)) return parseCadnanoV2ProjectData(data);
   const source = Array.isArray(data.bases) ? data.bases : [];
   return {
     view: data.view ?? null,
@@ -92,6 +95,10 @@ export function parseJsonProject(text) {
       constraints: item.constraints ?? {}
     }))
   };
+}
+
+export function parseCadnanoV2Project(text) {
+  return parseCadnanoV2ProjectData(JSON.parse(text));
 }
 
 export function parseOxViewProject(text) {
@@ -281,6 +288,283 @@ function typeCodeToBase(code) {
 
 function geometryCodeToName(code) {
   return ['A', 'B', 'Free'][Number(code)] ?? 'B';
+}
+
+function parseCadnanoV2ProjectData(data) {
+  const helices = new Map((data.vstrands ?? []).map((helix) => [Number(helix.num), helix]));
+  const numBases = data.vstrands?.[0]?.scaf?.length ?? 0;
+  const grid = numBases % 21 === 0 ? 'honeycomb' : 'square';
+  const helixRolls = cadnanoHelixRollMap(data.vstrands ?? [], grid);
+  const bases = [];
+  const keyToId = new Map();
+  const sourceCells = [];
+  let nextId = 0;
+  let skippedOffsets = 0;
+  let insertionCount = 0;
+
+  (data.vstrands ?? []).forEach((helix) => {
+    const helixNum = Number(helix.num);
+    for (let offset = 0; offset < numBases; offset += 1) {
+      if (helix.skip?.[offset] === -1) {
+        skippedOffsets += 1;
+        continue;
+      }
+      if (Number(helix.loop?.[offset] ?? 0) > 0) insertionCount += Number(helix.loop[offset]);
+      ['scaf', 'stap'].forEach((kind) => {
+        const entry = helix[kind]?.[offset];
+        if (!cadnanoCellOccupied(entry)) return;
+        const id = nextId++;
+        keyToId.set(cadnanoKey(kind, helixNum, offset), id);
+        sourceCells.push({ id, kind, helixNum, offset, entry });
+        bases.push(cadnanoBaseRecord(id, kind, helix, offset, grid, helixRolls));
+      });
+    }
+  });
+
+  const byId = new Map(bases.map((base) => [base.id, base]));
+  sourceCells.forEach(({ id, kind, entry }) => {
+    const base = byId.get(id);
+    if (!base) return;
+    const [fiveHelix, fiveOffset, threeHelix, threeOffset] = entry.map(Number);
+    base.up = keyToId.get(cadnanoKey(kind, fiveHelix, fiveOffset)) ?? null;
+    base.down = keyToId.get(cadnanoKey(kind, threeHelix, threeOffset)) ?? null;
+  });
+
+  const stapleColorByFivePrime = cadnanoStapleColorMap(data.vstrands ?? []);
+  const seen = new Set();
+  bases.forEach((base) => {
+    if (seen.has(base.id)) return;
+    const strand = collectCadnanoStrand(base, byId);
+    strand.forEach((item) => {
+      seen.add(item.id);
+      item.strand = base.strand;
+    });
+    if (base.sourceCadnano.kind === 'stap') {
+      const fivePrime = strand.find((item) => item.up === null) ?? strand[0];
+      const color = stapleColorByFivePrime.get(cadnanoKey('stap', fivePrime.sourceCadnano.helix, fivePrime.sourceCadnano.offset));
+      if (color) strand.forEach((item) => {
+        item.useStrandColor = true;
+        item.strandColor = color;
+      });
+    }
+  });
+
+  bases.forEach((base) => {
+    if (base.sourceCadnano.kind !== 'scaf') return;
+    const stapId = keyToId.get(cadnanoKey('stap', base.sourceCadnano.helix, base.sourceCadnano.offset));
+    if (stapId === undefined) return;
+    base.across = stapId;
+    const stap = byId.get(stapId);
+    if (stap) stap.across = base.id;
+  });
+
+  centerImportedBases(bases);
+  return {
+    view: null,
+    bases,
+    diagnostics: {
+      format: 'cadnano v2',
+      name: data.name ?? '',
+      helices: data.vstrands?.length ?? 0,
+      importedBases: bases.length,
+      strands: new Set(bases.map((base) => base.strand)).size,
+      pairs: bases.filter((base) => base.across !== null).length / 2,
+      grid,
+      numBases,
+      skippedOffsets,
+      insertionCount
+    }
+  };
+}
+
+function cadnanoBaseRecord(id, kind, helix, offset, grid, helixRolls = new Map()) {
+  return {
+    id,
+    type: 'X',
+    molecule: 'DNA',
+    geometry: 'B',
+    position: cadnanoPosition(helix, offset, kind, grid, helixRolls.get(Number(helix.num)) ?? 0),
+    up: null,
+    down: null,
+    across: null,
+    slide: [],
+    sticky: null,
+    stickyID: 0,
+    strand: id + 1,
+    circular: false,
+    top: false,
+    preset: false,
+    temp: false,
+    useStrandColor: kind === 'scaf',
+    strandColor: kind === 'scaf' ? '#0066cc' : null,
+    constraints: {},
+    sourceCadnano: {
+      kind,
+      helix: Number(helix.num),
+      offset,
+      row: Number(helix.row),
+      col: Number(helix.col)
+    }
+  };
+}
+
+function cadnanoPosition(helix, offset, kind, grid, rollDeg = 0) {
+  const col = Number(helix.col) || 0;
+  const row = Number(helix.row) || 0;
+  const center = cadnanoGridPosition(col, row, grid);
+  const geometry = TIAMAT_GEOMETRY.B;
+  const phase = THREE.MathUtils.degToRad(offset * geometry.twistDeg + rollDeg + (kind === 'stap' ? geometry.oppositeDeg : 0));
+  const axialOffset = kind === 'stap'
+    ? -(
+      geometry.radius *
+      2 *
+      Math.sin(THREE.MathUtils.degToRad(geometry.oppositeDeg) / 2) *
+      Math.tan(THREE.MathUtils.degToRad(geometry.inclinationDeg))
+    )
+    : 0;
+  return {
+    x: center.x + geometry.radius * Math.cos(phase),
+    y: offset * geometry.rise + axialOffset,
+    z: center.y + geometry.radius * Math.sin(phase)
+  };
+}
+
+function cadnanoHelixRollMap(vstrands, grid) {
+  const centers = new Map();
+  vstrands.forEach((helix) => {
+    centers.set(Number(helix.num), cadnanoGridPosition(Number(helix.col) || 0, Number(helix.row) || 0, grid));
+  });
+
+  const geometry = TIAMAT_GEOMETRY.B;
+  const constraints = new Map();
+  const addConstraint = (helixNum, offset, kind, desiredAngleDeg) => {
+    if (!centers.has(Number(helixNum))) return;
+    const kindPhase = kind === 'stap' ? geometry.oppositeDeg : 0;
+    const roll = normalizeDegrees(desiredAngleDeg - offset * geometry.twistDeg - kindPhase);
+    if (!constraints.has(Number(helixNum))) constraints.set(Number(helixNum), []);
+    constraints.get(Number(helixNum)).push(roll);
+  };
+
+  vstrands.forEach((helix) => {
+    const helixNum = Number(helix.num);
+    const center = centers.get(helixNum);
+    if (!center) return;
+    ['scaf', 'stap'].forEach((kind) => {
+      (helix[kind] ?? []).forEach((entry, offset) => {
+        if (!cadnanoCellOccupied(entry)) return;
+        const [, , threeHelixRaw, threeOffsetRaw] = entry.map(Number);
+        const threeHelix = Number(threeHelixRaw);
+        const threeOffset = Number(threeOffsetRaw);
+        if (!centers.has(threeHelix)) return;
+        if (threeHelix === helixNum && Math.abs(threeOffset - offset) === 1) return;
+        const target = centers.get(threeHelix);
+        const toTarget = cadnanoAngleDeg(target.x - center.x, target.y - center.y);
+        const toSource = cadnanoAngleDeg(center.x - target.x, center.y - target.y);
+        addConstraint(helixNum, offset, kind, toTarget);
+        addConstraint(threeHelix, threeOffset, kind, toSource);
+      });
+    });
+  });
+
+  return new Map(vstrands.map((helix) => {
+    const helixNum = Number(helix.num);
+    return [helixNum, circularMeanDegrees(constraints.get(helixNum) ?? [0])];
+  }));
+}
+
+function cadnanoGridPosition(col, row, grid) {
+  if (grid === 'honeycomb') {
+    return {
+      x: col * Math.sqrt(3) * 0.5 * CADNANO_HELIX_SPACING,
+      y: (col % 2 === 0
+        ? (row * 3 + (row % 2)) * 0.5
+        : (row * 3 - (row % 2) + 1) * 0.5) * CADNANO_HELIX_SPACING
+    };
+  }
+  return {
+    x: col * CADNANO_HELIX_SPACING,
+    y: row * CADNANO_HELIX_SPACING
+  };
+}
+
+function cadnanoCellOccupied(entry) {
+  return Array.isArray(entry) && entry.length >= 4 && entry.some((value) => Number(value) !== -1);
+}
+
+function cadnanoKey(kind, helix, offset) {
+  return `${kind}:${Number(helix)}:${Number(offset)}`;
+}
+
+function cadnanoStapleColorMap(vstrands) {
+  const colors = new Map();
+  vstrands.forEach((helix) => {
+    const helixNum = Number(helix.num);
+    (helix.stap_colors ?? []).forEach(([offset, color]) => {
+      colors.set(cadnanoKey('stap', helixNum, offset), cadnanoColor(color));
+    });
+  });
+  return colors;
+}
+
+function cadnanoColor(value) {
+  const color = Number(value);
+  if (!Number.isFinite(color)) return null;
+  return `#${Math.max(0, Math.min(0xffffff, color)).toString(16).padStart(6, '0')}`;
+}
+
+function cadnanoAngleDeg(x, y) {
+  return normalizeDegrees(THREE.MathUtils.radToDeg(Math.atan2(y, x)));
+}
+
+function normalizeDegrees(value) {
+  return ((value % 360) + 360) % 360;
+}
+
+function circularMeanDegrees(values) {
+  if (!values.length) return 0;
+  let x = 0;
+  let y = 0;
+  values.forEach((value) => {
+    const radians = THREE.MathUtils.degToRad(value);
+    x += Math.cos(radians);
+    y += Math.sin(radians);
+  });
+  if (Math.abs(x) < 0.000001 && Math.abs(y) < 0.000001) return normalizeDegrees(values[0]);
+  return normalizeDegrees(THREE.MathUtils.radToDeg(Math.atan2(y, x)));
+}
+
+function collectCadnanoStrand(base, byId) {
+  let start = base;
+  const visitedUp = new Set();
+  while (start.up !== null && !visitedUp.has(start.up)) {
+    visitedUp.add(start.id);
+    const up = byId.get(start.up);
+    if (!up) break;
+    start = up;
+  }
+  const strand = [];
+  const visitedDown = new Set();
+  let current = start;
+  while (current && !visitedDown.has(current.id)) {
+    strand.push(current);
+    visitedDown.add(current.id);
+    current = byId.get(current.down);
+  }
+  if (current && current.id === start.id) strand.forEach((item) => {
+    item.circular = true;
+  });
+  return strand;
+}
+
+function centerImportedBases(bases) {
+  if (!bases.length) return;
+  const center = bases
+    .reduce((sum, base) => sum.add(vectorFrom(base.position)), new THREE.Vector3())
+    .multiplyScalar(1 / bases.length);
+  bases.forEach((base) => {
+    const p = vectorFrom(base.position).sub(center);
+    base.position = { x: p.x, y: p.y, z: p.z };
+  });
 }
 
 function isNucleicAcidMonomer(monomer) {
