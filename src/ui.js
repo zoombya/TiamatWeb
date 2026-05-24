@@ -481,7 +481,7 @@ export class TiamatUI {
     if (action === 'pairSelected') this.model.pairSelected();
     if (action === 'extendUp') this.model.extendSelected('up');
     if (action === 'extendDown') this.model.extendSelected('down');
-    if (action === 'ligate') this.status(this.model.ligateSelected() ? 'Ligated selected 5/3 ends' : 'Ligate requires two compatible free ends at down distance');
+    if (action === 'ligate') this.status(this.model.ligateSelected() ? 'Ligated selected 5/3 ends' : "Ligate requires compatible selected 3' and 5' ends");
     if (action === 'nick') this.status(this.model.nickSelected() ? 'Nicked active strand after selected base' : "Nick requires one selected base with a 3' neighbor");
     if (action === 'deleteSelected') this.model.deleteSelected();
     if (action === 'selectAll') this.model.selectAll();
@@ -603,7 +603,7 @@ export class TiamatUI {
     if (key === 'h') return this.consume(event, () => this.setMode('selectHalf'));
     if (key === 'c') return this.consume(event, () => this.setMode('createStrand'));
     if (key === 'f') return this.consume(event, () => this.setMode('createFreeform'));
-    if (key === 'l') return this.consume(event, () => this.status(this.model.ligateSelected() ? 'Ligated selected 5/3 ends' : 'Ligate requires two compatible free ends at down distance'));
+    if (key === 'l') return this.consume(event, () => this.status(this.model.ligateSelected() ? 'Ligated selected 5/3 ends' : "Ligate requires compatible selected 3' and 5' ends"));
     if (key === 'n') return this.consume(event, () => this.status(this.model.nickSelected() ? 'Nicked active strand after selected base' : "Nick requires one selected base with a 3' neighbor"));
     return null;
   }

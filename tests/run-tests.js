@@ -144,13 +144,14 @@ test('paste preserves copied coordinates and strips links outside copied set', (
   assert.equal(pasted[1].down, null);
 });
 
-test('ligation and nicking enforce down-link constraints', () => {
+test('ligation joins compatible 3 and 5 prime ends regardless of distance', () => {
   const model = new TiamatModel();
   const a = model.createBase({ type: 'A', position: { x: 0, y: 0, z: 0 }, strand: 1 });
-  const b = model.createBase({ type: 'T', position: { x: 0, y: 0, z: 0.677 }, strand: 2 });
+  const b = model.createBase({ type: 'T', position: { x: 14, y: -2, z: 6 }, strand: 2 });
   model.selectIds([a.id, b.id]);
   assert.equal(model.ligateSelected(), true);
   assert.equal(a.down, b.id);
+  assert.equal(b.up, a.id);
   model.select(a.id);
   assert.equal(model.nickSelected(), true);
   assert.equal(a.down, null);

@@ -603,7 +603,15 @@ export class TiamatModel extends EventTarget {
   }
 
   ligateSelected() {
-    return this.createConnection('down');
+    const [a, b] = this.selectedBases();
+    const pair = this.orientedEndPair(a, b);
+    if (!pair) return false;
+    this.commit('ligate');
+    this.linkDown(pair[0], pair[1]);
+    this.assignStrands();
+    this.updateGeometryMeasurements();
+    this.emit();
+    return true;
   }
 
   nickSelected() {
@@ -628,6 +636,12 @@ export class TiamatModel extends EventTarget {
     if (a.molecule !== b.molecule || a.geometry !== b.geometry) return null;
     const distance = vectorFrom(a.position).distanceTo(vectorFrom(b.position));
     if (Math.abs(distance - DOWN_DISTANCE) > DOWN_ERROR) return null;
+    return this.orientedEndPair(a, b);
+  }
+
+  orientedEndPair(a, b) {
+    if (!a || !b || a.id === b.id) return null;
+    if (a.molecule !== b.molecule || a.geometry !== b.geometry) return null;
     if (a.down === null && b.up === null) return [a, b];
     if (b.down === null && a.up === null) return [b, a];
     return null;
