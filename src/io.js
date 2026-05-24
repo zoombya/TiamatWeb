@@ -1,0 +1,346 @@
+import * as THREE from 'three';
+import { BASES, DOWN_DISTANCE, TYPE_FROM_NAME } from './constants.js';
+import { arrayToPosition, normalizeImportedType } from './legacy-normalize.js';
+import { cleanSequence, normalizeBase, vectorFrom } from './geometry.js';
+
+export function fullProjectJson(model, view = null) {
+  return JSON.stringify({
+    app: 'Tiamat Web',
+    version: 3,
+    sourceCompatibility: 'Full web project graph, preserving original Nucleobase graph fields as ids.',
+    view,
+    bases: model.bases.map(fullBaseRecord)
+  }, null, 2);
+}
+
+export function dnaJson(model) {
+  return JSON.stringify({
+    bases: model.bases.map((base) => ({
+      id: base.id,
+      position: [base.position.x, base.position.y, base.position.z],
+      molecule: base.molecule,
+      type: BASES[base.type].name,
+      across: base.across,
+      up: base.up,
+      down: base.down
+    }))
+  }, null, 2);
+}
+
+export function sequenceText(model) {
+  return model.strands().map((strand, index) => {
+    const circular = strand[0]?.circular ? 'c' : '';
+    return `${index + 1}${circular}: ${strand.map((base) => base.type).join('')}`;
+  }).join('\n');
+}
+
+export function pdbText(model) {
+  let atom = 1;
+  const lines = [];
+  model.strands().forEach((strand, strandIndex) => {
+    strand.forEach((base, residueIndex) => {
+      const p = vectorFrom(base.position).multiplyScalar(10);
+      const residue = base.molecule === 'RNA' ? ` R${base.type}` : ` D${base.type}`;
+      lines.push(`ATOM  ${String(atom++).padStart(5)}  O5'${residue.padEnd(4)} ${String.fromCharCode(65 + (strandIndex % 26))}${String(residueIndex + 1).padStart(4)}    ${p.x.toFixed(3).padStart(8)}${p.y.toFixed(3).padStart(8)}${p.z.toFixed(3).padStart(8)}  1.00  0.00           O`);
+      const side = vectorFrom(base.position).multiplyScalar(10);
+      lines.push(`ATOM  ${String(atom++).padStart(5)}  N1 ${residue.padEnd(4)} ${String.fromCharCode(65 + (strandIndex % 26))}${String(residueIndex + 1).padStart(4)}    ${side.x.toFixed(3).padStart(8)}${side.y.toFixed(3).padStart(8)}${side.z.toFixed(3).padStart(8)}  1.00  0.00           N`);
+    });
+    lines.push('TER');
+  });
+  lines.push('END');
+  return lines.join('\n');
+}
+
+export function oxDnaText(model) {
+  const bases = [...model.bases].sort((a, b) => a.id - b.id);
+  const idToIndex = new Map(bases.map((base, index) => [base.id, index]));
+  const topology = [`${bases.length} ${model.strands().length}`];
+  const config = ['t = 0', 'b = 40 40 40', 'E = 0 0 0'];
+  bases.forEach((base) => {
+    topology.push(`${base.strand} ${base.type} ${base.up === null ? -1 : idToIndex.get(base.up)} ${base.down === null ? -1 : idToIndex.get(base.down)}`);
+    const p = vectorFrom(base.position);
+    config.push(`${p.x.toFixed(6)} ${p.y.toFixed(6)} ${p.z.toFixed(6)} 1 0 0 0 1 0 0 0 0 0 0 0`);
+  });
+  return `# topology\n${topology.join('\n')}\n\n# configuration\n${config.join('\n')}\n`;
+}
+
+export function parseJsonProject(text) {
+  const data = JSON.parse(text);
+  if (Array.isArray(data.systems)) return parseOxViewProjectData(data);
+  const source = Array.isArray(data.bases) ? data.bases : [];
+  return {
+    view: data.view ?? null,
+    bases: source.map((item, index) => ({
+      id: Number(item.id ?? index),
+      type: normalizeImportedType(item.type ?? typeCodeToBase(item.typeCode)),
+      molecule: item.molecule ?? 'DNA',
+      geometry: item.geometry ?? geometryCodeToName(item.geometryCode),
+      position: arrayToPosition(item.position ?? [0, 0, 0]),
+      up: item.up,
+      down: item.down,
+      across: item.across,
+      slide: Array.isArray(item.slide) ? item.slide : [],
+      sticky: item.sticky ?? null,
+      stickyID: item.stickyID ?? 0,
+      strand: item.strand ?? 0,
+      circular: Boolean(item.circular),
+      top: Boolean(item.top),
+      preset: item.preset ?? true,
+      temp: Boolean(item.temp),
+      useStrandColor: Boolean(item.useStrandColor ?? item.strandColor),
+      strandColor: item.strandColor ?? null,
+      constraints: item.constraints ?? {}
+    }))
+  };
+}
+
+export function parseOxViewProject(text) {
+  return parseOxViewProjectData(JSON.parse(text));
+}
+
+function parseOxViewProjectData(data) {
+  const bases = [];
+  const localIdToBaseId = new Map();
+  const fallbackIdToBaseIds = new Map();
+  let nextId = 0;
+  let monomerCount = 0;
+  let pairFieldCount = 0;
+  let unresolvedPairCount = 0;
+
+  (data.systems ?? []).forEach((system, systemIndex) => {
+    (system.strands ?? []).forEach((strand, strandIndex) => {
+      (strand.monomers ?? []).forEach((monomer) => {
+        monomerCount += 1;
+        if (!isNucleicAcidMonomer(monomer)) return;
+        const id = nextId++;
+        const systemId = system.id ?? systemIndex;
+        const strandId = strand.id ?? strandIndex;
+        const sourceId = Number(monomer.id);
+        const key = oxViewKey(systemId, sourceId);
+        localIdToBaseId.set(key, id);
+        if (!fallbackIdToBaseIds.has(sourceId)) fallbackIdToBaseIds.set(sourceId, []);
+        fallbackIdToBaseIds.get(sourceId).push(id);
+        const color = oxViewColor(monomer.color);
+        bases.push({
+          id,
+          sourceOxViewId: Number.isFinite(sourceId) ? sourceId : null,
+          type: normalizeImportedType(monomer.type ?? 'X'),
+          molecule: monomer.class === 'RNA' || monomer.type === 'U' ? 'RNA' : 'DNA',
+          geometry: 'Free',
+          position: arrayToPosition(monomer.p ?? [0, 0, 0]),
+          up: null,
+          down: null,
+          across: null,
+          slide: [],
+          sticky: null,
+          stickyID: 0,
+          strand: Number(strandId) + 1,
+          circular: false,
+          top: false,
+          preset: Boolean(monomer.type),
+          temp: false,
+          useStrandColor: Boolean(color),
+          strandColor: color,
+          constraints: {},
+          oxView: {
+            system: systemId,
+            strand: strandId,
+            a1: Array.isArray(monomer.a1) ? monomer.a1 : null,
+            a3: Array.isArray(monomer.a3) ? monomer.a3 : null,
+            cluster: monomer.cluster ?? null
+          }
+        });
+      });
+    });
+  });
+
+  const byId = new Map(bases.map((base) => [base.id, base]));
+  (data.systems ?? []).forEach((system, systemIndex) => {
+    const systemId = system.id ?? systemIndex;
+    (system.strands ?? []).forEach((strand) => {
+      (strand.monomers ?? []).forEach((monomer) => {
+        const base = byId.get(resolveOxViewId(systemId, monomer.id, localIdToBaseId, fallbackIdToBaseIds));
+        if (!base) return;
+        base.up = resolveOxViewId(systemId, monomer.n3, localIdToBaseId, fallbackIdToBaseIds);
+        base.down = resolveOxViewId(systemId, monomer.n5, localIdToBaseId, fallbackIdToBaseIds);
+        const pairId = monomer.bp ?? monomer.pair;
+        if (pairId !== undefined && pairId !== null) pairFieldCount += 1;
+        base.across = resolveOxViewId(systemId, pairId, localIdToBaseId, fallbackIdToBaseIds);
+        if (pairId !== undefined && pairId !== null && base.across === null) unresolvedPairCount += 1;
+      });
+    });
+  });
+
+  bases.forEach((base) => {
+    if (base.up !== null && byId.get(base.up)?.down !== base.id) base.up = null;
+    if (base.down !== null && byId.get(base.down)?.up !== base.id) base.down = null;
+    if (base.across !== null && byId.get(base.across)?.across !== base.id) {
+      const across = byId.get(base.across);
+      if (across && across.across === null) across.across = base.id;
+      else base.across = null;
+    }
+  });
+  const scaleInfo = normalizeOxViewScale(bases, byId);
+  const pairedBases = bases.filter((base) => base.across !== null).length;
+
+  return {
+    view: null,
+    bases,
+    diagnostics: {
+      format: 'oxView',
+      systems: data.systems?.length ?? 0,
+      sourceMonomers: monomerCount,
+      importedBases: bases.length,
+      strands: (data.systems ?? []).reduce((sum, system) => sum + (system.strands?.length ?? 0), 0),
+      pairFields: pairFieldCount,
+      unresolvedPairs: unresolvedPairCount,
+      pairedBases,
+      pairs: pairedBases / 2,
+      importScale: scaleInfo.scale,
+      medianOriginalDownDistance: scaleInfo.medianDown,
+      centeredAt: scaleInfo.center
+    }
+  };
+}
+
+export function parseSequenceText(text, options, model) {
+  const before = model.bases.length;
+  text.split(/\r?\n/).forEach((line) => {
+    const sequence = cleanSequence(line.replace(/^\s*\d+c?:\s*/i, ''), options.molecule);
+    if (sequence) model.createLine(sequence, options);
+  });
+  return model.bases.length - before;
+}
+
+export function parsePdb(text, model) {
+  const residues = [];
+  const seen = new Set();
+  text.split(/\r?\n/).forEach((line) => {
+    if (!line.startsWith('ATOM')) return;
+    const residueKey = `${line.slice(21, 22)}:${line.slice(22, 26).trim()}`;
+    if (seen.has(residueKey)) return;
+    seen.add(residueKey);
+    const residue = line.slice(17, 20).toUpperCase();
+    const type = normalizeImportedType(residue.replace(/[^ATUGC]/g, '').slice(-1) || 'X');
+    residues.push({
+      type,
+      molecule: residue.includes('R') || type === 'U' ? 'RNA' : 'DNA',
+      chain: line.slice(21, 22),
+      position: {
+        x: Number(line.slice(30, 38)) / 10,
+        y: Number(line.slice(38, 46)) / 10,
+        z: Number(line.slice(46, 54)) / 10
+      }
+    });
+  });
+  model.commit('import pdb');
+  model.bases = [];
+  let previous = null;
+  let chain = null;
+  residues.forEach((residue) => {
+    if (chain !== residue.chain) previous = null;
+    chain = residue.chain;
+    const base = model.createBase({
+      type: normalizeBase(residue.type, residue.molecule),
+      molecule: residue.molecule,
+      position: residue.position,
+      strand: previous?.strand ?? model.nextStrand()
+    });
+    model.linkDown(previous, base);
+    previous = base;
+  });
+  model.assignStrands();
+  model.updateGeometryMeasurements();
+  model.select(model.bases[0]?.id ?? null);
+  return model.bases.length;
+}
+
+export function download(filename, content, type) {
+  const blob = content instanceof Blob ? content : new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function fullBaseRecord(base) {
+  return {
+    ...base,
+    position: [base.position.x, base.position.y, base.position.z],
+    type: BASES[base.type].name,
+    typeCode: ['A', 'T', 'U', 'C', 'G', 'X'].indexOf(base.type),
+    geometryCode: base.geometry === 'A' ? 0 : base.geometry === 'B' ? 1 : 2
+  };
+}
+
+function typeCodeToBase(code) {
+  return ['A', 'T', 'U', 'C', 'G', 'X'][Number(code)] ?? 'X';
+}
+
+function geometryCodeToName(code) {
+  return ['A', 'B', 'Free'][Number(code)] ?? 'B';
+}
+
+function isNucleicAcidMonomer(monomer) {
+  return monomer?.class === 'DNA'
+    || monomer?.class === 'RNA'
+    || ['A', 'T', 'U', 'G', 'C'].includes(String(monomer?.type ?? '').toUpperCase());
+}
+
+function oxViewKey(systemId, monomerId) {
+  return `${systemId}:${Number(monomerId)}`;
+}
+
+function resolveOxViewId(systemId, monomerId, localIdToBaseId, fallbackIdToBaseIds) {
+  if (monomerId === null || monomerId === undefined) return null;
+  const numericId = Number(monomerId);
+  const local = localIdToBaseId.get(oxViewKey(systemId, numericId));
+  if (local !== undefined) return local;
+  const fallback = fallbackIdToBaseIds.get(numericId);
+  return fallback?.length === 1 ? fallback[0] : null;
+}
+
+function oxViewColor(value) {
+  if (value === null || value === undefined) return null;
+  const color = Number(value);
+  if (!Number.isFinite(color)) return null;
+  return `#${Math.max(0, Math.min(0xffffff, color)).toString(16).padStart(6, '0')}`;
+}
+
+function normalizeOxViewScale(bases, byId) {
+  if (!bases.length) return { scale: 1, medianDown: 0, center: [0, 0, 0] };
+  const downDistances = bases
+    .map((base) => {
+      const down = byId.get(base.down);
+      if (!down) return null;
+      return vectorFrom(base.position).distanceTo(vectorFrom(down.position));
+    })
+    .filter((value) => Number.isFinite(value) && value > 0.0001 && value < 3)
+    .sort((a, b) => a - b);
+  const medianDown = downDistances[Math.floor(downDistances.length / 2)] ?? 0;
+  const scale = medianDown > 0 ? DOWN_DISTANCE / medianDown : 1;
+  const center = bases
+    .reduce((sum, base) => sum.add(vectorFrom(base.position)), new THREE.Vector3())
+    .multiplyScalar(1 / bases.length);
+  bases.forEach((base) => {
+    const p = vectorFrom(base.position).sub(center).multiplyScalar(scale);
+    base.position = { x: p.x, y: p.y, z: p.z };
+    const a1 = vectorFrom(base.oxView?.a1);
+    const a3 = vectorFrom(base.oxView?.a3);
+    base.oxView = {
+      ...(base.oxView ?? {}),
+      a1: a1.lengthSq() > 0 ? a1.normalize().toArray() : null,
+      a3: a3.lengthSq() > 0 ? a3.normalize().toArray() : null,
+      importScale: scale,
+      importCenter: [center.x, center.y, center.z],
+      medianDownDistance: medianDown
+    };
+  });
+  return {
+    scale,
+    medianDown,
+    center: [center.x, center.y, center.z]
+  };
+}

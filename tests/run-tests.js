@@ -1,0 +1,237 @@
+import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
+import * as THREE from 'three';
+import { TiamatModel } from '../src/model.js';
+import { DOWN_DISTANCE } from '../src/constants.js';
+import { vectorFrom } from '../src/geometry.js';
+import { fullProjectJson, parseJsonProject, parseOxViewProject } from '../src/io.js';
+import { ScreenSelectionIndex } from '../src/selection-index.js';
+
+const OXVIEW_FIXTURE = '/Users/m.matthies/Data/Dietz_Designs/oxview/42hb_v40_polyT.oxview';
+const tests = [];
+
+test('createHelix creates paired duplex with Tiamat graph links', () => {
+  const model = new TiamatModel();
+  const made = model.createHelix('ATGC', {
+    molecule: 'DNA',
+    geometry: 'B',
+    radius: 1,
+    rise: 0.332,
+    twist: -34.28571,
+    double: true
+  });
+  assert.equal(made, 4);
+  assert.equal(model.bases.length, 8);
+  assert.equal(model.strands().length, 2);
+  assert.equal(model.bases.filter((base) => base.across !== null).length / 2, 4);
+  assert.equal(model.getBase(model.bases[0].down).up, model.bases[0].id);
+});
+
+test('full project JSON roundtrips graph fields', () => {
+  const model = new TiamatModel();
+  model.createLine('ATGC', { molecule: 'DNA', geometry: 'B' });
+  const data = parseJsonProject(fullProjectJson(model));
+  const loaded = new TiamatModel();
+  loaded.loadBases(data.bases);
+  assert.equal(loaded.bases.length, 4);
+  assert.equal(loaded.strands().length, 1);
+  assert.equal(loaded.getBase(0).down, 1);
+  assert.equal(loaded.getBase(1).up, 0);
+});
+
+test('selection modes select expected graph neighborhoods', () => {
+  const model = new TiamatModel();
+  model.createHelix('ATGC', {
+    molecule: 'DNA',
+    geometry: 'B',
+    radius: 1,
+    rise: 0.332,
+    twist: -34.28571,
+    double: true
+  });
+  model.selectPair(0);
+  assert.equal(model.selectedIds.size, 2);
+  model.selectStrand(0);
+  assert.equal(model.selectedIds.size, 4);
+  model.selectHelix(0);
+  assert.equal(model.selectedIds.size, 8);
+  model.applySelectionIds([0, 1], 'replace');
+  assert.deepEqual([...model.selectedIds].sort((a, b) => a - b), [0, 1]);
+  model.applySelectionIds([2], 'add');
+  assert.deepEqual([...model.selectedIds].sort((a, b) => a - b), [0, 1, 2]);
+  model.applySelectionIds([1], 'subtract');
+  assert.deepEqual([...model.selectedIds].sort((a, b) => a - b), [0, 2]);
+});
+
+test('constraint measurements include inclination and violation flags', () => {
+  const model = new TiamatModel();
+  model.createHelix('ATGC', {
+    molecule: 'DNA',
+    geometry: 'B',
+    radius: 1,
+    rise: 0.332,
+    twist: -34.28571,
+    double: true
+  });
+  const base = model.getBase(2);
+  assert.equal(base.constraints.hasInclination, true);
+  assert.equal(typeof base.constraints.violations.rise, 'boolean');
+  model.getBase(base.down).position.x += 10;
+  model.updateGeometryMeasurements();
+  assert.equal(model.getBase(2).constraints.violations.rise, true);
+});
+
+test('create strand between points uses A/B defaults and graph links', () => {
+  const model = new TiamatModel();
+  const count = model.createStrandBetween({ x: 0, y: 0, z: 0 }, { x: 0, y: 2, z: 0 }, 'AUGCAU', {
+    molecule: 'RNA',
+    geometry: 'A',
+    double: true
+  });
+  assert.equal(count, Math.ceil(2 / 0.29));
+  assert.equal(model.bases[0].molecule, 'RNA');
+  assert.equal(model.bases[0].geometry, 'A');
+  assert.ok(model.bases.some((base) => base.across !== null));
+  assert.equal(model.getBase(model.bases[0].down).up, model.bases[0].id);
+});
+
+test('create strand honors dialog-style count, initial mode, orientation, and molecule pairing', () => {
+  const model = new TiamatModel();
+  const count = model.createStrandBetween({ x: 0, y: 0, z: 0 }, { x: 0, y: 4, z: 0 }, 'AAAAAA', {
+    molecule: 'DNA',
+    pairedMolecule: 'RNA',
+    geometry: 'A',
+    double: true,
+    baseCount: 3,
+    initialMode: 'blank',
+    orientation: 'reverse'
+  });
+  assert.equal(count, 3);
+  assert.equal(model.bases.filter((base) => base.strand === 1).length, 3);
+  assert.equal(model.bases.filter((base) => base.strand === 2).length, 3);
+  assert.ok(model.bases.every((base) => base.type === 'X'));
+  assert.equal(model.getBase(1).molecule, 'RNA');
+  assert.ok(model.getBase(0).position.y > model.getBase(2).position.y);
+});
+
+test('freeform creation samples control points and attaches endpoints', () => {
+  const model = new TiamatModel();
+  const start = model.createBase({ type: 'A', position: { x: 0, y: 0, z: 0 }, strand: 1 });
+  const end = model.createBase({ type: 'T', position: { x: 0, y: 2.7, z: 0 }, strand: 2 });
+  const made = model.createFreeform([
+    start.position,
+    { x: 0.6, y: 1.2, z: 0 },
+    end.position
+  ], { molecule: 'DNA', geometry: 'B', startBaseId: start.id, endBaseId: end.id });
+  assert.ok(made > 0);
+  assert.notEqual(start.down, null);
+  assert.equal(model.getBase(end.up).down, end.id);
+});
+
+test('paste preserves copied coordinates and strips links outside copied set', () => {
+  const model = new TiamatModel();
+  model.createLine('ATGC', { molecule: 'DNA', geometry: 'B' });
+  model.selectIds([1, 2]);
+  const originalPosition = { ...model.getBase(1).position };
+  model.copySelected();
+  assert.equal(model.pasteClipboard(), 2);
+  const pasted = model.selectedBases().sort((a, b) => a.id - b.id);
+  assert.equal(pasted.length, 2);
+  assert.deepEqual(pasted[0].position, originalPosition);
+  assert.equal(pasted[0].up, null);
+  assert.equal(pasted[0].down, pasted[1].id);
+  assert.equal(pasted[1].up, pasted[0].id);
+  assert.equal(pasted[1].down, null);
+});
+
+test('ligation and nicking enforce down-link constraints', () => {
+  const model = new TiamatModel();
+  const a = model.createBase({ type: 'A', position: { x: 0, y: 0, z: 0 }, strand: 1 });
+  const b = model.createBase({ type: 'T', position: { x: 0, y: 0, z: 0.677 }, strand: 2 });
+  model.selectIds([a.id, b.id]);
+  assert.equal(model.ligateSelected(), true);
+  assert.equal(a.down, b.id);
+  model.select(a.id);
+  assert.equal(model.nickSelected(), true);
+  assert.equal(a.down, null);
+  assert.equal(b.up, null);
+});
+
+test('oxView fixture imports with Tiamat scale and base pairs', () => {
+  if (!existsSync(OXVIEW_FIXTURE)) return 'skipped: fixture not found';
+  const data = parseOxViewProject(readFileSync(OXVIEW_FIXTURE, 'utf8'));
+  const model = new TiamatModel();
+  model.loadBases(data.bases);
+  assert.equal(model.bases.length, 15895);
+  assert.equal(model.strands().length, 206);
+  assert.equal(model.bases.filter((base) => base.across !== null).length / 2, 7494);
+  assert.equal(data.diagnostics.unresolvedPairs, 0);
+
+  const downDistances = model.bases
+    .map((base) => {
+      const down = model.getBase(base.down);
+      return down ? vectorFrom(base.position).distanceTo(vectorFrom(down.position)) : null;
+    })
+    .filter((value) => value !== null && value < 3)
+    .sort((a, b) => a - b);
+  const medianDown = downDistances[Math.floor(downDistances.length / 2)];
+  assert.ok(Math.abs(medianDown - DOWN_DISTANCE) < 0.000001, `median down ${medianDown}`);
+});
+
+test('oxView parser accepts both pair and bp fields', () => {
+  const oxview = JSON.stringify({
+    systems: [{
+      id: 0,
+      strands: [
+        { id: 0, monomers: [{ id: 0, type: 'A', class: 'DNA', p: [0, 0, 0], n5: 1, pair: 2 }, { id: 1, type: 'T', class: 'DNA', p: [0, 0.5, 0], n3: 0, bp: 3 }] },
+        { id: 1, monomers: [{ id: 2, type: 'T', class: 'DNA', p: [1, 0, 0], n5: 3, pair: 0 }, { id: 3, type: 'A', class: 'DNA', p: [1, 0.5, 0], n3: 2, bp: 1 }] }
+      ]
+    }]
+  });
+  const data = parseOxViewProject(oxview);
+  const model = new TiamatModel();
+  model.loadBases(data.bases);
+  assert.equal(model.bases.filter((base) => base.across !== null).length / 2, 2);
+});
+
+test('screen selection index returns bases inside a view rectangle', () => {
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
+  camera.updateProjectionMatrix();
+  camera.updateMatrixWorld();
+  const view = { id: 'test', camera, rect: { x: 0, y: 0, width: 100, height: 100 } };
+  const bases = [
+    { id: 1, position: { x: -0.5, y: 0.5, z: 0 } },
+    { id: 2, position: { x: 0.5, y: -0.5, z: 0 } },
+    { id: 3, position: { x: 1.5, y: 0, z: 0 } }
+  ];
+  const index = new ScreenSelectionIndex(25);
+  index.ensure('test', bases, view, new Set(), (base) => vectorFrom(base.position));
+  assert.deepEqual(index.query(0, 0, 50, 50), [1]);
+  assert.deepEqual(index.query(50, 50, 100, 100), [2]);
+  assert.equal(index.nearest(25, 25, 8).id, 1);
+  assert.equal(index.nearest(75, 75, 8).id, 2);
+  assert.equal(index.nearest(50, 50, 4), null);
+});
+
+function test(name, fn) {
+  tests.push({ name, fn });
+}
+
+let failures = 0;
+for (const { name, fn } of tests) {
+  try {
+    const result = fn();
+    console.log(`ok - ${name}${result ? ` (${result})` : ''}`);
+  } catch (error) {
+    failures += 1;
+    console.error(`not ok - ${name}`);
+    console.error(error.stack ?? error.message);
+  }
+}
+
+if (failures > 0) {
+  console.error(`${failures} test${failures === 1 ? '' : 's'} failed`);
+  process.exit(1);
+}
+
+console.log(`${tests.length} tests passed`);

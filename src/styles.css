@@ -1,0 +1,636 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #0b0f13;
+  color: #e9eef3;
+  --bg: #0b0f13;
+  --chrome: #10161c;
+  --panel: #151c23;
+  --panel-soft: #111820;
+  --field: #0b1117;
+  --border: #25323d;
+  --border-strong: #3c5364;
+  --text: #e9eef3;
+  --muted: #9eadba;
+  --accent: #58d3e4;
+  --accent-soft: rgba(88, 211, 228, 0.13);
+  --danger: #ff746d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+.buttonLike {
+  min-height: 30px;
+  border: 1px solid transparent;
+  background: #1a242d;
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+button:hover,
+.buttonLike:hover {
+  border-color: var(--border-strong);
+  background: #22303a;
+}
+
+button.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: #dffaff;
+}
+
+button.last-selection-mode:not(.selected) {
+  border-color: #536875;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.workbench {
+  display: grid;
+  grid-template-columns: 286px minmax(440px, 1fr) 304px;
+  grid-template-rows: 92px minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
+}
+
+.topbar {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 268px minmax(360px, 1fr);
+  grid-template-rows: 42px 34px;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: #0f151b;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+h1,
+h2,
+p,
+summary {
+  margin: 0;
+}
+
+h1 {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+h2 {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.brand p,
+small,
+.selection span {
+  color: var(--muted);
+}
+
+.brand p {
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+.status {
+  max-width: 136px;
+  min-width: 84px;
+  padding: 5px 8px;
+  border: 1px solid #315161;
+  border-radius: 999px;
+  color: #c8f7ff;
+  font-size: 11px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topTools,
+.viewTools,
+.selectionTools {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.selectionTools {
+  grid-column: 2;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0b1117;
+  overflow: auto hidden;
+}
+
+.selectionTools button {
+  flex: 0 0 auto;
+  min-height: 26px;
+  padding: 0 9px;
+  background: transparent;
+  color: #cbd6df;
+}
+
+.selectionTools button.selected {
+  background: #1f3740;
+  color: #e8fcff;
+}
+
+.topTools {
+  grid-column: 2;
+  grid-row: 1;
+  justify-content: center;
+}
+
+.commandStrip {
+  min-width: 0;
+  overflow: auto hidden;
+}
+
+.viewTools {
+  position: absolute;
+  z-index: 6;
+  top: 12px;
+  right: 12px;
+  justify-content: flex-end;
+  padding: 4px;
+  border: 1px solid rgba(60, 83, 100, 0.82);
+  border-radius: 8px;
+  background: rgba(11, 17, 23, 0.74);
+  backdrop-filter: blur(10px);
+}
+
+.viewTools button,
+.topTools button,
+.buttonLike {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
+.icon {
+  width: 32px;
+  min-width: 32px;
+  padding: 0;
+  font-size: 15px;
+}
+
+.fileInput {
+  display: none;
+}
+
+.toolPalette,
+.inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  padding: 10px;
+  background: var(--chrome);
+}
+
+.toolPalette {
+  border-right: 1px solid var(--border);
+}
+
+.inspector {
+  border-left: 1px solid var(--border);
+}
+
+.panel {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+}
+
+.toolCard {
+  background: var(--panel-soft);
+}
+
+.compact {
+  gap: 8px;
+}
+
+details.panel {
+  display: block;
+}
+
+details.panel > :not(summary) {
+  margin-top: 10px;
+}
+
+details.panel > label,
+details.panel > .segmented,
+details.panel > .buttonrow,
+details.panel > .grid2,
+details.panel > .grid3,
+details.panel > .selection,
+details.panel > textarea,
+details.panel > select {
+  display: grid;
+}
+
+summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 20px;
+  cursor: pointer;
+  list-style: none;
+}
+
+summary::-webkit-details-marker {
+  display: none;
+}
+
+summary::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 1px solid var(--muted);
+  border-bottom: 1px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform 120ms ease;
+}
+
+details[open] summary::after {
+  transform: rotate(225deg);
+}
+
+.buttonrow,
+.segmented,
+.basegrid,
+.grid2,
+.grid3 {
+  display: grid;
+  gap: 6px;
+}
+
+.segmented {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--field);
+}
+
+.segmented button {
+  min-width: 0;
+  background: transparent;
+}
+
+.segmented[aria-label="Geometry"],
+.segmented[aria-label="Simplify mode"],
+.segmented[aria-label="Schematic display"],
+.segmented[aria-label="Selection operation"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.buttonrow {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.compactActions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.buttonrow button,
+.buttonrow .buttonLike {
+  padding: 0 7px;
+}
+
+.basegrid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.basegrid button {
+  min-height: 32px;
+  font-weight: 700;
+}
+
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.swatch {
+  min-height: 28px;
+  border-color: color-mix(in srgb, var(--swatch), white 22%);
+  background: var(--swatch);
+}
+
+.swatch.selected {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
+}
+
+.grid2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.grid3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+label {
+  display: grid;
+  gap: 5px;
+  color: #cbd6df;
+  font-size: 12px;
+}
+
+.checkline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+}
+
+.checkline input {
+  width: auto;
+  accent-color: var(--accent);
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  min-height: 30px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--field);
+  color: #f4f8fb;
+  padding: 7px 8px;
+  font-size: 12px;
+}
+
+select {
+  padding-right: 24px;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: 2px solid rgba(88, 211, 228, 0.28);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+label.buttonLike {
+  display: inline-flex;
+  gap: 0;
+  width: auto;
+  color: var(--text);
+}
+
+textarea {
+  min-height: 72px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.selection {
+  display: grid;
+  gap: 4px;
+  min-height: 72px;
+  padding: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+  background: var(--field);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.inspectorHero .selection {
+  min-height: 96px;
+}
+
+.stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background: #090d11;
+}
+
+.viewport {
+  position: absolute;
+  inset: 0;
+}
+
+.viewport canvas {
+  display: block;
+}
+
+.viewOverlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.viewBadge {
+  position: absolute;
+  z-index: 4;
+  padding: 4px 8px;
+  border: 1px solid #3a5266;
+  border-radius: 999px;
+  background: rgba(10, 16, 22, 0.78);
+  color: #d8e9f5;
+  font-size: 12px;
+  backdrop-filter: blur(8px);
+}
+
+.selectionBox {
+  position: absolute;
+  z-index: 5;
+  border: 1px solid var(--accent);
+  background: rgba(88, 211, 228, 0.12);
+}
+
+.hud {
+  position: absolute;
+  z-index: 3;
+  left: 14px;
+  bottom: 14px;
+  display: flex;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(15, 21, 28, 0.84);
+  color: #dce8ef;
+  font-size: 12px;
+  backdrop-filter: blur(10px);
+}
+
+.hud strong {
+  color: #ffffff;
+}
+
+.interactionHint {
+  position: absolute;
+  z-index: 4;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(460px, calc(100% - 28px));
+  padding: 7px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: rgba(12, 24, 32, 0.88);
+  color: #dff9ff;
+  font-size: 13px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.sequencePanel {
+  min-height: 0;
+}
+
+.trayHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+#strandList {
+  display: grid;
+  gap: 7px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.strandItem {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 9px;
+  text-align: left;
+}
+
+.strandItem span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1180px) {
+  .workbench {
+    grid-template-columns: 276px minmax(360px, 1fr);
+  }
+
+  .topbar {
+    grid-template-columns: 250px minmax(320px, 1fr);
+    grid-template-rows: auto auto auto;
+  }
+
+  .topTools,
+  .viewTools {
+    justify-content: flex-start;
+  }
+
+  .topTools {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .viewTools {
+    position: absolute;
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .selectionTools {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .inspector {
+    display: none;
+  }
+}
+
+@media (max-width: 780px) {
+  .workbench {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 48vh minmax(0, 1fr);
+  }
+
+  .topbar,
+  .stage,
+  .toolPalette {
+    grid-column: 1;
+  }
+
+  .topbar {
+    grid-template-columns: 1fr;
+  }
+
+  .stage {
+    grid-row: 2;
+  }
+
+  .toolPalette {
+    grid-row: 3;
+    border-right: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .viewTools,
+  .topTools {
+    justify-content: flex-start;
+  }
+
+  .topTools,
+  .selectionTools {
+    grid-column: 1;
+  }
+}
