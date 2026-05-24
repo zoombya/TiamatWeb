@@ -248,6 +248,59 @@ test('cadnano schematic run detection treats virtual-helix crossovers as run bre
   }), false);
 });
 
+test('cadnano v2 import bridges strand links across skipped deletions', () => {
+  const cadnano = JSON.stringify({
+    name: 'skip bridge cadnano',
+    vstrands: [{
+      num: 0,
+      row: 0,
+      col: 0,
+      scaf: [[-1, -1, 0, 1], [0, 0, 0, 2], [0, 1, -1, -1]],
+      stap: [[-1, -1, -1, -1], [-1, -1, -1, -1], [-1, -1, -1, -1]],
+      loop: [0, 0, 0],
+      skip: [0, -1, 0],
+      stap_colors: [],
+      scafLoop: [],
+      stapLoop: []
+    }]
+  });
+  const data = parseJsonProject(cadnano);
+  const scaf0 = data.bases.find((base) => base.sourceCadnano.kind === 'scaf' && base.sourceCadnano.offset === 0);
+  const scaf2 = data.bases.find((base) => base.sourceCadnano.kind === 'scaf' && base.sourceCadnano.offset === 2);
+  assert.equal(data.bases.length, 2);
+  assert.equal(scaf0.down, scaf2.id);
+  assert.equal(scaf2.up, scaf0.id);
+  const model = new TiamatModel();
+  model.loadBases(data.bases);
+  assert.equal(model.strands().length, 1);
+  assert.equal(model.strands()[0].length, 2);
+});
+
+test('model preserves cadnano circular strands as single strands', () => {
+  const cadnano = JSON.stringify({
+    name: 'circular cadnano',
+    vstrands: [{
+      num: 0,
+      row: 0,
+      col: 0,
+      scaf: [[0, 2, 0, 1], [0, 0, 0, 2], [0, 1, 0, 0]],
+      stap: [[-1, -1, -1, -1], [-1, -1, -1, -1], [-1, -1, -1, -1]],
+      loop: [0, 0, 0],
+      skip: [0, 0, 0],
+      stap_colors: [],
+      scafLoop: [],
+      stapLoop: []
+    }]
+  });
+  const data = parseJsonProject(cadnano);
+  const model = new TiamatModel();
+  model.loadBases(data.bases);
+  const strands = model.strands();
+  assert.equal(strands.length, 1);
+  assert.equal(strands[0].length, 3);
+  assert.equal(strands[0].every((base) => base.circular), true);
+});
+
 test('screen selection index returns bases inside a view rectangle', () => {
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
   camera.updateProjectionMatrix();

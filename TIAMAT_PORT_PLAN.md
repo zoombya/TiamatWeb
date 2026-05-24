@@ -129,6 +129,8 @@ Last updated: 2026-05-23
   - oxView import preserves orientation metadata but does not yet use it to render base normals or nucleobase direction.
   - [x] Added cadnano v2 JSON import based on scadnano/cadnano v2 graph semantics: `vstrands`, scaffold/staple four-tuples, row/col grid placement, scaffold/staple pairing, staple colors, loops/skips diagnostics.
   - [x] Cadnano coordinates now come from full Tiamat B-form virtual helix templates: Tiamat axial rise, Tiamat opposite-strand phase, and per-helix roll inferred from crossover endpoints before nick/ligation/deletion graph links are applied.
+  - [x] Model strand enumeration now walks unheaded/circular cadnano graph components as full strands instead of splitting them into one-base leftovers.
+  - [x] Cadnano skip/deletion offsets now bridge strand links through the deleted raw cells so deletions do not become artificial strand discontinuities.
 - [ ] Performance:
   - Rendering uses instanced meshes for bases/phosphates and cylinders, but line geometry is rebuilt on each model update.
   - Need profiling for designs above 50k bases.

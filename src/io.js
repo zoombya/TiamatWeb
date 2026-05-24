@@ -297,6 +297,7 @@ function parseCadnanoV2ProjectData(data) {
   const helixRolls = cadnanoHelixRollMap(data.vstrands ?? [], grid);
   const bases = [];
   const keyToId = new Map();
+  const rawCellByKey = new Map();
   const sourceCells = [];
   let nextId = 0;
   let skippedOffsets = 0;
@@ -305,14 +306,19 @@ function parseCadnanoV2ProjectData(data) {
   (data.vstrands ?? []).forEach((helix) => {
     const helixNum = Number(helix.num);
     for (let offset = 0; offset < numBases; offset += 1) {
-      if (helix.skip?.[offset] === -1) {
-        skippedOffsets += 1;
-        continue;
-      }
+      if (helix.skip?.[offset] === -1) skippedOffsets += 1;
       if (Number(helix.loop?.[offset] ?? 0) > 0) insertionCount += Number(helix.loop[offset]);
       ['scaf', 'stap'].forEach((kind) => {
         const entry = helix[kind]?.[offset];
         if (!cadnanoCellOccupied(entry)) return;
+        rawCellByKey.set(cadnanoKey(kind, helixNum, offset), {
+          kind,
+          helixNum,
+          offset,
+          entry,
+          skipped: helix.skip?.[offset] === -1
+        });
+        if (helix.skip?.[offset] === -1) return;
         const id = nextId++;
         keyToId.set(cadnanoKey(kind, helixNum, offset), id);
         sourceCells.push({ id, kind, helixNum, offset, entry });
@@ -326,8 +332,8 @@ function parseCadnanoV2ProjectData(data) {
     const base = byId.get(id);
     if (!base) return;
     const [fiveHelix, fiveOffset, threeHelix, threeOffset] = entry.map(Number);
-    base.up = keyToId.get(cadnanoKey(kind, fiveHelix, fiveOffset)) ?? null;
-    base.down = keyToId.get(cadnanoKey(kind, threeHelix, threeOffset)) ?? null;
+    base.up = resolveCadnanoNeighborId(kind, fiveHelix, fiveOffset, 'up', keyToId, rawCellByKey);
+    base.down = resolveCadnanoNeighborId(kind, threeHelix, threeOffset, 'down', keyToId, rawCellByKey);
   });
 
   const stapleColorByFivePrime = cadnanoStapleColorMap(data.vstrands ?? []);
@@ -493,6 +499,26 @@ function cadnanoCellOccupied(entry) {
 
 function cadnanoKey(kind, helix, offset) {
   return `${kind}:${Number(helix)}:${Number(offset)}`;
+}
+
+function resolveCadnanoNeighborId(kind, helix, offset, direction, keyToId, rawCellByKey) {
+  let currentHelix = Number(helix);
+  let currentOffset = Number(offset);
+  const seen = new Set();
+  while (Number.isFinite(currentHelix) && Number.isFinite(currentOffset) && currentHelix !== -1 && currentOffset !== -1) {
+    const key = cadnanoKey(kind, currentHelix, currentOffset);
+    const id = keyToId.get(key);
+    if (id !== undefined) return id;
+    const raw = rawCellByKey.get(key);
+    if (!raw || seen.has(key)) return null;
+    seen.add(key);
+    const next = direction === 'up'
+      ? [Number(raw.entry[0]), Number(raw.entry[1])]
+      : [Number(raw.entry[2]), Number(raw.entry[3])];
+    currentHelix = next[0];
+    currentOffset = next[1];
+  }
+  return null;
 }
 
 function cadnanoStapleColorMap(vstrands) {

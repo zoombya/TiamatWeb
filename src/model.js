@@ -801,7 +801,10 @@ export class TiamatModel extends EventTarget {
       if (strand.length) result.push(strand);
     });
     this.bases.forEach((base) => {
-      if (!visited.has(base.id)) result.push([base]);
+      if (!visited.has(base.id)) {
+        const strand = this.walkStrand(base, visited);
+        if (strand.length) result.push(strand);
+      }
     });
     return result;
   }
