@@ -866,6 +866,16 @@ export class TiamatUI {
     if (d.format === 'cadnano v2') {
       lines.push(`<span>${d.helices} helices · ${d.grid} grid · ${d.numBases} offsets</span>`);
       lines.push(`<span>${d.skippedOffsets} deletions · ${d.insertionCount} insertion bases</span>`);
+    } else if (d.format?.startsWith('Tiamat .dna')) {
+      lines.push(`<span>schema ${d.schema} · ${d.recovery}${d.partial ? ' · partial recovery' : ''}</span>`);
+      if (d.partial && d.recoveredBases) {
+        lines.push(`<span>${d.recoveredBases} recovered · ${d.synthesizedBases ?? 0} repaired · ${d.expectedBases} expected</span>`);
+      } else if (d.expectedBases && d.expectedBases !== d.importedBases) {
+        lines.push(`<span>${d.importedBases} of ${d.expectedBases} bases recovered</span>`);
+      }
+      if (d.coordinateLayoutRebuilt) {
+        lines.push('<span>coordinates rebuilt from recovered graph</span>');
+      }
     } else {
       lines.push(`<span>${d.pairFields} pair fields · ${d.unresolvedPairs} unresolved</span>`);
       lines.push(`<span>scale ${formatNumber(d.importScale)} · original down ${formatNumber(d.medianOriginalDownDistance)}</span>`);

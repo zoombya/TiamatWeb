@@ -64,6 +64,109 @@ export function reverseUtf8Corruption(buffer) {
   return out;
 }
 
+function reverseUtf8LegacyBytes(buffer) {
+  const src = new Uint8Array(buffer);
+  const out = [];
+  let i = 0;
+  while (i < src.length) {
+    const b0 = src[i];
+    if (b0 < 0x80) {
+      out.push(b0);
+      i += 1;
+    } else if (b0 >= 0xC2 && b0 <= 0xDF && i + 1 < src.length && (src[i + 1] & 0xC0) === 0x80) {
+      const cp = ((b0 & 0x1F) << 6) | (src[i + 1] & 0x3F);
+      out.push(cp <= 0xFF ? cp : UNKNOWN);
+      i += 2;
+    } else if (b0 >= 0xE0 && b0 <= 0xEF && i + 2 < src.length && (src[i + 1] & 0xC0) === 0x80 && (src[i + 2] & 0xC0) === 0x80) {
+      const cp = ((b0 & 0x0F) << 12) | ((src[i + 1] & 0x3F) << 6) | (src[i + 2] & 0x3F);
+      out.push(cp <= 0xFF ? cp : UNKNOWN);
+      i += 3;
+    } else {
+      out.push(UNKNOWN);
+      i += 1;
+    }
+  }
+  return out;
+}
+
+const CP1252_REVERSE = new Map([
+  [0x20AC, 0x80],
+  [0x201A, 0x82],
+  [0x0192, 0x83],
+  [0x201E, 0x84],
+  [0x2026, 0x85],
+  [0x2020, 0x86],
+  [0x2021, 0x87],
+  [0x02C6, 0x88],
+  [0x2030, 0x89],
+  [0x0160, 0x8A],
+  [0x2039, 0x8B],
+  [0x0152, 0x8C],
+  [0x017D, 0x8E],
+  [0x2018, 0x91],
+  [0x2019, 0x92],
+  [0x201C, 0x93],
+  [0x201D, 0x94],
+  [0x2022, 0x95],
+  [0x2013, 0x96],
+  [0x2014, 0x97],
+  [0x02DC, 0x98],
+  [0x2122, 0x99],
+  [0x0161, 0x9A],
+  [0x203A, 0x9B],
+  [0x0153, 0x9C],
+  [0x017E, 0x9E],
+  [0x0178, 0x9F]
+]);
+
+function reverseUtf8Windows1252(buffer) {
+  const src = new Uint8Array(buffer);
+  const out = [];
+  let i = 0;
+  while (i < src.length) {
+    const b0 = src[i];
+    if (b0 < 0x80) {
+      out.push(b0);
+      i += 1;
+      continue;
+    }
+
+    let cp = null;
+    let width = 1;
+    if (b0 >= 0xC2 && b0 <= 0xDF && i + 1 < src.length && (src[i + 1] & 0xC0) === 0x80) {
+      cp = ((b0 & 0x1F) << 6) | (src[i + 1] & 0x3F);
+      width = 2;
+    } else if (b0 >= 0xE0 && b0 <= 0xEF && i + 2 < src.length && (src[i + 1] & 0xC0) === 0x80 && (src[i + 2] & 0xC0) === 0x80) {
+      cp = ((b0 & 0x0F) << 12) | ((src[i + 1] & 0x3F) << 6) | (src[i + 2] & 0x3F);
+      width = 3;
+    } else if (b0 >= 0xF0 && b0 <= 0xF4 && i + 3 < src.length && (src[i + 1] & 0xC0) === 0x80 && (src[i + 2] & 0xC0) === 0x80 && (src[i + 3] & 0xC0) === 0x80) {
+      cp = ((b0 & 0x07) << 18) | ((src[i + 1] & 0x3F) << 12) | ((src[i + 2] & 0x3F) << 6) | (src[i + 3] & 0x3F);
+      width = 4;
+    }
+
+    if (cp === null) {
+      out.push(UNKNOWN);
+      i += 1;
+    } else if (cp === 0xFFFD) {
+      out.push(UNKNOWN);
+      i += width;
+    } else if (cp <= 0x7F) {
+      out.push(cp);
+      i += width;
+    } else if (cp >= 0xA0 && cp <= 0xFF) {
+      out.push(cp);
+      i += width;
+    } else if (CP1252_REVERSE.has(cp)) {
+      out.push(CP1252_REVERSE.get(cp));
+      i += width;
+    } else {
+      out.push(UNKNOWN);
+      i += width;
+    }
+  }
+  return out;
+}
+
 function replacementSequenceCount(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
   let count = 0;
@@ -398,17 +501,39 @@ function readNucleobaseFields(base, step, schema, reader, archive, stack) {
       step = S_DATA;
     }
     if (step === S_DATA) {
-      base.px = reader.readDouble();
-      base.py = reader.readDouble();
-      base.pz = reader.readDouble();
+      if (archive._corruptedStream) {
+        const width = archive._floatPositions ? 4 : 8;
+        reader.skip(width * 3);
+        base.px = 0;
+        base.py = 0;
+        base.pz = 0;
+      } else if (archive._floatPositions) {
+        base.px = reader.readFloat();
+        base.py = reader.readFloat();
+        base.pz = reader.readFloat();
+      } else {
+        base.px = reader.readDouble();
+        base.py = reader.readDouble();
+        base.pz = reader.readDouble();
+      }
       const rawType = reader.readInt();
       base.type = baseTypeToChar(rawType, schema);
-      if (schema > 1) {
+      if (schema > 1 && !archive._schema3NoColor) {
         base.useStrandColor = reader.readBool();
         base.strandColorR = reader.readFloat();
         base.strandColorG = reader.readFloat();
         base.strandColorB = reader.readFloat();
-        base._slideCount = reader.readInt();
+        base._slideCount = archive._schema3NoSlides ? 0 : reader.readInt();
+        if (base._slideCount < 0 || base._slideCount > 64 || base._slideCount > (archive._expectedBaseCount ?? 100000)) {
+          base._slideCount = 0;
+        }
+        base._slideObjs = [];
+      } else {
+        base.useStrandColor = false;
+        base.strandColorR = 0;
+        base.strandColorG = 0;
+        base.strandColorB = 0;
+        base._slideCount = 0;
         base._slideObjs = [];
       }
       step = (schema > 1 && base._slideCount > 0) ? S_SLIDES : S_STICKY;
@@ -422,7 +547,10 @@ function readNucleobaseFields(base, step, schema, reader, archive, stack) {
       step = S_STICKY;
     }
     if (step === S_STICKY) {
-      if (schema > 2) {
+      if (schema > 2 && archive._schema3StickyIdOnly) {
+        base.stickyID = reader.readInt();
+        base._stickyObj = null;
+      } else if (schema > 2 && !archive._schema3NoSticky) {
         base.stickyID = reader.readInt();
         const obj = readObjectInline(archive, stack, base, S_DONE, schema);
         if (obj === DEFERRED) return false;
@@ -507,7 +635,7 @@ function readObjectInline(archive, stack, parentBase, resumeStep, schema) {
 function startChildBase(archive, stack, parentBase, resumeStep, schema, isNewClass) {
   // Don't create more objects than expected — corruption can cause
   // back-refs to be misread as class-refs, spawning phantom objects.
-  if (archive._maxObjects > 0 && Object.keys(archive.objectMap).length >= archive._maxObjects) {
+  if (archive._maxObjects > 0 && (archive._objectCount ?? Object.keys(archive.objectMap).length) >= archive._maxObjects) {
     return { _unresolved: true };
   }
   // Structural validation: the first byte of a Nucleobase body is isAcross
@@ -528,6 +656,8 @@ function startChildBase(archive, stack, parentBase, resumeStep, schema, isNewCla
   const objIndex = archive.mapCount++;
   const child = { _archiveIndex: objIndex };
   archive.objectMap[objIndex] = child;
+  archive._objectCount = (archive._objectCount ?? 0) + 1;
+  archive._nucleobaseCount = (archive._nucleobaseCount ?? 0) + 1;
 
   stack.push({ base: parentBase, step: resumeStep, schema: schema, childResult: child });
   stack.push({ base: child, step: S_ACROSS, schema });
@@ -647,23 +777,272 @@ function resolvePointer(obj) {
  * definition as an anchor, then parse the real MFC object graph from there.
  */
 export function parseDnaFile(arrayBuffer) {
-  const R = [...new Uint8Array(arrayBuffer)];
-
-  // ── Locate the Nucleobase class definition ──
-  const anchor = findString(R, 'Nucleobase');
-  if (anchor === -1) throw new Error('Could not find Nucleobase class definition in .dna file');
-  const tagOffset = anchor - 6;
-  const baseCount = readDwordAt(R, tagOffset - 4);
-  const schema = readWordAt(R, anchor - 4);
-  const dataStart = anchor + 10; // byte after "Nucleobase" class name
-
-  const graphParse = parseNucleobaseGraph(R, dataStart, baseCount, schema);
-  if (graphParse.bases.length === baseCount) {
-    graphParse.diagnostics.recovery = 'raw binary';
-    graphParse.diagnostics.replacementSequences = replacementSequenceCount(arrayBuffer);
-    return graphParse;
+  const replacementSequences = replacementSequenceCount(arrayBuffer);
+  const attempts = [
+    { bytes: [...new Uint8Array(arrayBuffer)], recovery: 'raw binary', corrupted: false }
+  ];
+  if (replacementSequences > 0) {
+    attempts.push({
+      bytes: reverseUtf8Corruption(arrayBuffer),
+      recovery: 'UTF-8 replacement recovery (schema 3 no-color)',
+      corrupted: true,
+      schema3NoColor: true
+    }, {
+      bytes: reverseUtf8Corruption(arrayBuffer),
+      recovery: 'UTF-8 replacement recovery',
+      corrupted: true
+    }, {
+      bytes: reverseUtf8Corruption(arrayBuffer),
+      recovery: 'UTF-8 replacement recovery (schema 3 no-sticky)',
+      corrupted: true,
+      schema3NoSticky: true
+    }, {
+      bytes: reverseUtf8Corruption(arrayBuffer),
+      recovery: 'UTF-8 replacement recovery (float positions, schema 3 no-sticky)',
+      corrupted: true,
+      floatPositions: true,
+      schema3NoSticky: true
+    }, {
+      bytes: reverseUtf8Corruption(arrayBuffer),
+      recovery: 'UTF-8 replacement recovery (schema 3 no-slides)',
+      corrupted: true,
+      schema3NoSlides: true
+    }, {
+      bytes: reverseUtf8LegacyBytes(arrayBuffer),
+      recovery: 'UTF-8 legacy byte recovery',
+      corrupted: true
+    }, {
+      bytes: reverseUtf8Windows1252(arrayBuffer),
+      recovery: 'Windows-1252 text recovery',
+      corrupted: true
+    });
   }
-  throw new Error(`Could not parse Tiamat .dna object graph: read ${graphParse.bases.length} of ${baseCount} bases`);
+
+  const errors = [];
+  const recoverable = [];
+  for (const attempt of attempts) {
+    const parsed = parseDnaBytes(attempt.bytes, attempt);
+    if (parsed.ok) {
+      if (parsed.provisional) {
+        const d = parsed.data.diagnostics;
+        const recoveredFraction = (d.recoveredBases ?? d.importedBases ?? 0) / (d.expectedBases ?? 1);
+        if (!d.partial || recoveredFraction >= 0.98 || (d.expectedBases >= 5000 && recoveredFraction >= 0.7)) {
+          parsed.data.diagnostics.replacementSequences = replacementSequences;
+          return parsed.data;
+        }
+        recoverable.push(parsed);
+        continue;
+      }
+      parsed.data.diagnostics.replacementSequences = replacementSequences;
+      return parsed.data;
+    }
+    errors.push(parsed.error);
+  }
+  if (recoverable.length > 0) {
+    recoverable.sort((a, b) => b.score - a.score);
+    const best = recoverable[0].data;
+    best.diagnostics.replacementSequences = replacementSequences;
+    return best;
+  }
+  throw new Error(errors.at(-1) ?? 'Could not parse Tiamat .dna object graph');
+}
+
+function parseDnaBytes(bytes, attempt) {
+  const anchor = findString(bytes, 'Nucleobase');
+  if (anchor === -1) return { ok: false, error: 'Could not find Nucleobase class definition in .dna file' };
+  const tagOffset = anchor - 6;
+  const baseCount = readDwordAt(bytes, tagOffset - 4);
+  const schema = readWordAt(bytes, anchor - 4);
+  if (baseCount <= 0 || baseCount > 100000 || schema <= 0 || schema > 10) {
+    return { ok: false, error: `Invalid Tiamat object graph header: ${baseCount} bases, schema ${schema}` };
+  }
+  const dataStart = anchor + 10; // byte after "Nucleobase" class name
+  const graphParse = parseNucleobaseGraph(bytes, dataStart, baseCount, schema, attempt);
+  const coordinateQuality = coordinateRecoveryQuality(graphParse.bases);
+  if (graphParse.bases.length === baseCount) {
+    if (attempt.corrupted && coordinateQuality < 0.9) {
+      rebuildLegacyCoordinates(graphParse.bases);
+      graphParse.diagnostics.coordinateLayoutRebuilt = true;
+    }
+    graphParse.diagnostics.recovery = attempt.recovery;
+    graphParse.diagnostics.corrupted = attempt.corrupted;
+    graphParse.diagnostics.partial = false;
+    graphParse.diagnostics.coordinateQuality = coordinateQuality;
+    return {
+      ok: true,
+      data: graphParse,
+      provisional: attempt.corrupted && coordinateQuality < 0.9,
+      score: 2 + coordinateQuality
+    };
+  }
+
+  const recoveredFraction = graphParse.bases.length / baseCount;
+  if (attempt.corrupted && recoveredFraction >= 0.5) {
+    const recoveredBases = graphParse.bases.length;
+    synthesizeMissingBases(graphParse.bases, baseCount, schema);
+    rebuildLegacyCoordinates(graphParse.bases);
+    graphParse.diagnostics.recovery = attempt.recovery;
+    graphParse.diagnostics.corrupted = true;
+    graphParse.diagnostics.partial = true;
+    graphParse.diagnostics.importedBases = graphParse.bases.length;
+    graphParse.diagnostics.recoveredBases = recoveredBases;
+    graphParse.diagnostics.synthesizedBases = baseCount - recoveredBases;
+    graphParse.diagnostics.coordinateQuality = coordinateQuality;
+    graphParse.diagnostics.coordinateLayoutRebuilt = true;
+    graphParse.diagnostics.strands = countParsedStrands(graphParse.bases);
+    graphParse.diagnostics.pairs = countPairs(graphParse.bases);
+    return {
+      ok: true,
+      data: graphParse,
+      provisional: true,
+      score: recoveredFraction + coordinateQuality * 0.2
+    };
+  }
+  return {
+    ok: false,
+    error: `Could not parse Tiamat .dna object graph: read ${graphParse.bases.length} of ${baseCount} bases${attempt.corrupted ? '; file contains UTF-8 replacement bytes, so exact binary coordinates may be unrecoverable' : ''}${graphParse.diagnostics.parseError ? ` (${graphParse.diagnostics.parseError} at ${graphParse.diagnostics.parseOffset})` : ''}`
+  };
+}
+
+function synthesizeMissingBases(bases, baseCount, schema) {
+  for (let id = bases.length; id < baseCount; id++) {
+    bases.push({
+      id,
+      type: 'X',
+      molecule: schema > 3 ? 'DNA' : 'DNA',
+      geometry: schema < 3 ? 'B' : 'Free',
+      position: { x: 0, y: 0, z: 0 },
+      up: null,
+      down: null,
+      across: null,
+      slide: [],
+      sticky: null,
+      stickyID: 0,
+      strand: 0,
+      circular: false,
+      top: false,
+      preset: false,
+      temp: false,
+      useStrandColor: false,
+      strandColor: null,
+      constraints: {}
+    });
+  }
+}
+
+function rebuildLegacyCoordinates(bases) {
+  const strands = orderedStrands(bases);
+  const positions = new Map();
+  const rowSpacing = 2.4;
+  const rise = 0.68;
+  const pairOffset = 1.15;
+
+  if (strands.length > bases.length / 4) {
+    const columns = Math.ceil(Math.sqrt(bases.length));
+    bases.forEach((base, index) => {
+      positions.set(base.id, {
+        x: (index % columns) * rise,
+        y: Math.floor(index / columns) * rise,
+        z: 0
+      });
+    });
+  } else {
+    strands.forEach((strand, row) => {
+      strand.forEach((base, column) => {
+        if (positions.has(base.id)) return;
+        positions.set(base.id, {
+          x: column * rise,
+          y: row * rowSpacing,
+          z: 0
+        });
+      });
+    });
+
+    bases.forEach((base) => {
+      if (positions.has(base.id)) return;
+      positions.set(base.id, {
+        x: (base.id % 96) * rise,
+        y: (Math.floor(base.id / 96) + strands.length) * rowSpacing,
+        z: 0
+      });
+    });
+  }
+
+  bases.forEach((base) => {
+    if (base.across === null || !bases[base.across]) return;
+    const here = positions.get(base.id);
+    const paired = positions.get(base.across);
+    if (!here || !paired) return;
+    if (base.id < base.across) {
+      paired.x = here.x;
+      paired.y = here.y + pairOffset;
+      paired.z = here.z;
+    }
+  });
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  positions.forEach((pos) => {
+    minX = Math.min(minX, pos.x);
+    maxX = Math.max(maxX, pos.x);
+    minY = Math.min(minY, pos.y);
+    maxY = Math.max(maxY, pos.y);
+  });
+  const cx = Number.isFinite(minX) ? (minX + maxX) / 2 : 0;
+  const cy = Number.isFinite(minY) ? (minY + maxY) / 2 : 0;
+  bases.forEach((base) => {
+    const pos = positions.get(base.id) ?? { x: 0, y: 0, z: 0 };
+    base.position = { x: pos.x - cx, y: pos.y - cy, z: pos.z };
+  });
+}
+
+function orderedStrands(bases) {
+  const visited = new Set();
+  const strands = [];
+  const byId = new Map(bases.map((base) => [base.id, base]));
+  const walk = (start) => {
+    const strand = [];
+    let current = start;
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id);
+      strand.push(current);
+      current = current.down === null ? null : byId.get(current.down);
+    }
+    return strand;
+  };
+
+  bases.forEach((base) => {
+    if (base.up === null && !visited.has(base.id)) {
+      const strand = walk(base);
+      if (strand.length) strands.push(strand);
+    }
+  });
+  bases.forEach((base) => {
+    if (!visited.has(base.id)) {
+      const strand = walk(base);
+      if (strand.length) strands.push(strand);
+    }
+  });
+  return strands;
+}
+
+function coordinateRecoveryQuality(bases) {
+  if (!bases.length) return 0;
+  let plausible = 0;
+  bases.forEach((base) => {
+    const { x, y, z } = base.position;
+    const length = Math.hypot(x, y, z);
+    if (Number.isFinite(length) &&
+        length > 0.0001 &&
+        Math.abs(x) < 500 &&
+        Math.abs(y) < 500 &&
+        Math.abs(z) < 500) {
+      plausible += 1;
+    }
+  });
+  return plausible / bases.length;
 }
 
 function countParsedStrands(bases) {
@@ -697,29 +1076,39 @@ function rawPosition(x, y, z) {
   };
 }
 
-function parseNucleobaseGraph(bytes, dataStart, baseCount, schema) {
+function parseNucleobaseGraph(bytes, dataStart, baseCount, schema, attempt = {}) {
   const archive = new MfcArchiveReader(bytes);
   archive.reader.pos = dataStart;
   archive.mapCount = 10;
   archive.classMap[9] = { name: 'Nucleobase', schema };
   archive.classNameToIndex.Nucleobase = 9;
   archive._maxObjects = baseCount + 8;
+  archive._expectedBaseCount = baseCount;
+  archive._corruptedStream = Boolean(attempt.corrupted);
+  archive._schema3NoSticky = Boolean(attempt.schema3NoSticky) && schema === 3;
+  archive._schema3StickyIdOnly = Boolean(attempt.schema3StickyIdOnly) && schema === 3;
+  archive._schema3NoColor = Boolean(attempt.schema3NoColor) && schema === 3;
+  archive._schema3NoSlides = Boolean(attempt.schema3NoSlides) && schema === 3;
+  archive._floatPositions = Boolean(attempt.floatPositions);
 
   const first = { _archiveIndex: 10 };
   archive.objectMap[10] = first;
+  archive._objectCount = 1;
+  archive._nucleobaseCount = 1;
   archive.mapCount = 11;
 
   const stack = [{ base: first, step: S_ACROSS, schema }];
   try {
     drainNucleobaseStack(stack, archive);
 
-    while (countNucleobaseObjects(archive) < baseCount && archive.reader.remaining() >= 2) {
+    while ((archive._nucleobaseCount ?? countNucleobaseObjects(archive)) < baseCount && archive.reader.remaining() >= 2) {
       const before = archive.reader.pos;
       const obj = readObjectInline(archive, stack, null, S_DONE, schema);
       if (obj === DEFERRED) drainNucleobaseStack(stack, archive);
       if (archive.reader.pos === before) archive.reader.skip(2);
     }
-  } catch {
+  } catch (error) {
+    archive._parseError = error;
     // Return the partial parse; the caller rejects incomplete object graphs.
   }
 
@@ -779,8 +1168,10 @@ function parseNucleobaseGraph(bytes, dataStart, baseCount, schema) {
       expectedBases: baseCount,
       schema,
       strands,
-      pairs: bases.filter((b) => b.across !== null).length / 2,
-      corrupted: false
+      pairs: countPairs(bases),
+      corrupted: false,
+      parseError: archive._parseError?.message,
+      parseOffset: archive.reader.pos
     }
   };
 }
@@ -804,6 +1195,21 @@ function countNucleobaseObjects(archive) {
     if (obj?.type !== undefined || obj?.isAcross !== undefined) count++;
   }
   return count;
+}
+
+function countPairs(bases) {
+  const seen = new Set();
+  let pairs = 0;
+  bases.forEach((base) => {
+    if (base.across === null || !bases[base.across]) return;
+    const a = Math.min(base.id, base.across);
+    const b = Math.max(base.id, base.across);
+    const key = `${a}:${b}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    pairs += 1;
+  });
+  return pairs;
 }
 
 function repairReciprocalLinks(bases, key, reciprocalKey) {
@@ -886,6 +1292,9 @@ function reconstructDouble(raw) {
   }
   if (unknowns >= 7) return 0; // too corrupted
 
+  const candidate = reconstructDoubleBySearch(raw);
+  if (candidate !== null) return candidate;
+
   // byte 7 (MSB): sign + exponent high bits
   // byte 6: exponent low bits + mantissa high bits
   const b7known = raw[7] !== UNKNOWN;
@@ -939,6 +1348,41 @@ function reconstructDouble(raw) {
     if (Number.isFinite(v) && Math.abs(v) > 0.001 && Math.abs(v) < 10000) return v;
   }
   return 0;
+}
+
+function reconstructDoubleBySearch(raw) {
+  const b6Values = raw[6] === UNKNOWN
+    ? [...Array.from({ length: 128 }, (_, i) => 0x80 + i), ...Array.from({ length: 128 }, (_, i) => i)]
+    : [raw[6]];
+  const b7Values = raw[7] === UNKNOWN
+    ? [0x40, 0xC0, 0x3F, 0xBF, 0x41, 0xC1]
+    : [raw[7]];
+  const mantissaFillSets = [0x80, 0x00, 0xC0];
+  let best = null;
+  let bestScore = Infinity;
+  const buf = new ArrayBuffer(8);
+  const view = new DataView(buf);
+  for (const fill of mantissaFillSets) {
+    for (let i = 0; i < 6; i++) view.setUint8(i, raw[i] === UNKNOWN ? fill : raw[i]);
+    for (const b6 of b6Values) {
+      view.setUint8(6, b6);
+      for (const b7 of b7Values) {
+        view.setUint8(7, b7);
+        const value = view.getFloat64(0, true);
+        if (!Number.isFinite(value) || Math.abs(value) >= 500) continue;
+        const abs = Math.abs(value);
+        if (abs < 0.000001) continue;
+        const magnitudeScore = Math.abs(Math.log10(abs) - 0.8);
+        const rangeScore = abs > 250 ? 10 : 0;
+        const score = magnitudeScore + rangeScore + (fill === 0x80 ? 0 : 0.25);
+        if (score < bestScore) {
+          bestScore = score;
+          best = value;
+        }
+      }
+    }
+  }
+  return best;
 }
 
 function rgbToHex(r, g, b) {

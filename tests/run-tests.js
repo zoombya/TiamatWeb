@@ -35,6 +35,52 @@ const TIAMAT_DNA_FIXTURES = [
     pairs: 6656
   }
 ];
+const TIAMAT_SCHEMA5_FIXTURES = [
+  {
+    path: '/Users/m.matthies/Downloads/4hb_8crossovers_less_withhandle_dev_1stickyend_0stickyend_updated_used.dna',
+    bases: 1552,
+    strands: 2,
+    pairs: 716
+  },
+  {
+    path: '/Users/m.matthies/Downloads/4hb_8crossovers_endconnection_lesspx_for_triangle_shorter_1d5k_used.dna',
+    bases: 1332,
+    strands: 1,
+    pairs: 612
+  },
+  {
+    path: '/Users/m.matthies/Downloads/layeredxovers_DPOWDPOW_symmetricsinglebinding.dna',
+    bases: 520,
+    strands: 1,
+    pairs: 224
+  },
+  {
+    path: '/Users/m.matthies/Downloads/short_1_strand_ChengdeMao_nanoscale_M2_customizeddesign.dna',
+    bases: 1104,
+    strands: 20,
+    pairs: 486
+  }
+];
+const TIAMAT_REPLACEMENT_FIXTURES = [
+  {
+    path: '/Users/m.matthies/Downloads/45 degree with sequences.dna',
+    bases: 256
+  },
+  {
+    path: '/Users/m.matthies/Downloads/45 degree with sequences (1).dna',
+    bases: 256
+  }
+];
+const TIAMAT_LEGACY_TEXT_FIXTURES = [
+  {
+    path: '/Users/m.matthies/Downloads/ssRNA_6.3k_Science.dna',
+    bases: 6144
+  },
+  {
+    path: '/Users/m.matthies/Data/TPlay/uploads/34/structure/ssRNA_6.3k_Science.dna',
+    bases: 6144
+  }
+];
 const tests = [];
 
 test('createHelix creates paired duplex with Tiamat graph links', () => {
@@ -241,6 +287,39 @@ test('raw Tiamat .dna fixtures import through MFC object graph with strand color
       '#f7941d'
     ]);
     assert.equal(data.bases.filter((base) => base.useStrandColor).length, fixture.bases);
+  });
+});
+
+test('schema 5 Tiamat .dna fixtures import RNA-aware object graph without strand-color regressions', () => {
+  const available = TIAMAT_SCHEMA5_FIXTURES.filter((fixture) => existsSync(fixture.path));
+  if (!available.length) return 'skipped: schema 5 fixtures not found';
+  available.forEach((fixture) => {
+    const buffer = readFileSync(fixture.path);
+    const data = parseDnaFile(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+    assert.equal(data.diagnostics.recovery, 'raw binary');
+    assert.equal(data.diagnostics.schema, 5);
+    assert.equal(data.bases.length, fixture.bases);
+    assert.equal(data.diagnostics.strands, fixture.strands);
+    assert.equal(data.diagnostics.pairs, fixture.pairs);
+    assert.equal(data.bases.filter((base) => base.molecule === 'RNA').length, 0);
+  });
+});
+
+test('legacy text-transformed Tiamat .dna files import with repaired coordinates', () => {
+  const available = [
+    ...TIAMAT_REPLACEMENT_FIXTURES,
+    ...TIAMAT_LEGACY_TEXT_FIXTURES
+  ].filter((fixture) => existsSync(fixture.path));
+  if (!available.length) return 'skipped: legacy text fixtures not found';
+  available.forEach((fixture) => {
+    const buffer = readFileSync(fixture.path);
+    const data = parseDnaFile(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+    assert.equal(data.diagnostics.corrupted, true);
+    assert.equal(data.diagnostics.coordinateLayoutRebuilt, true);
+    assert.equal(data.bases.length, fixture.bases);
+    assert.equal(data.diagnostics.expectedBases, fixture.bases);
+    assert.ok(data.diagnostics.replacementSequences > 0);
+    assert.ok(data.bases.some((base) => Math.hypot(base.position.x, base.position.y, base.position.z) > 0.1));
   });
 });
 
