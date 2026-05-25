@@ -11,7 +11,6 @@ export function mountApp(root) {
       <header class="topbar">
         <div class="brand">
           <div><h1>Tiamat Web</h1><p>DNA/RNA nanostructure workbench</p></div>
-          <span id="status" class="status">Ready</span>
         </div>
         <nav class="selectionTools modeStrip" aria-label="Selection modes">
           <button data-mode="doNothing">None</button>
@@ -42,6 +41,7 @@ export function mountApp(root) {
           <button data-action="exportOx">oxDNA</button>
           <button data-action="exportPng">PNG</button>
         </nav>
+        <div id="status" class="status">Ready</div>
       </header>
 
       <aside class="toolPalette" aria-label="Tiamat tools">
@@ -916,7 +916,9 @@ export class TiamatUI {
   }
 
   status(message) {
-    document.querySelector('#status').textContent = message;
+    const target = document.querySelector('#status');
+    target.textContent = message;
+    target.title = message;
   }
 }
 

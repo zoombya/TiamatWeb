@@ -72,7 +72,7 @@ button.last-selection-mode:not(.selected) {
 .workbench {
   display: grid;
   grid-template-columns: 286px minmax(440px, 1fr) 304px;
-  grid-template-rows: 92px minmax(0, 1fr);
+  grid-template-rows: 118px minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
 }
@@ -81,8 +81,8 @@ button.last-selection-mode:not(.selected) {
   grid-column: 1 / -1;
   display: grid;
   grid-template-columns: 268px minmax(360px, 1fr);
-  grid-template-rows: 42px 34px;
-  gap: 8px 12px;
+  grid-template-rows: 42px minmax(24px, auto) 34px;
+  gap: 6px 12px;
   align-items: center;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
@@ -130,17 +130,21 @@ small,
 }
 
 .status {
-  max-width: 136px;
-  min-width: 84px;
-  padding: 5px 8px;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 24px;
+  padding: 5px 9px;
   border: 1px solid #315161;
-  border-radius: 999px;
+  border-radius: 6px;
+  background: rgba(8, 17, 23, 0.82);
   color: #c8f7ff;
-  font-size: 11px;
-  text-align: center;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.25;
+  text-align: left;
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .topTools,
@@ -590,7 +594,7 @@ textarea {
 
   .selectionTools {
     grid-column: 1 / -1;
-    grid-row: 2;
+    grid-row: 3;
   }
 
   .inspector {
@@ -612,6 +616,7 @@ textarea {
 
   .topbar {
     grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto auto;
   }
 
   .stage {
@@ -631,6 +636,10 @@ textarea {
 
   .topTools,
   .selectionTools {
+    grid-column: 1;
+  }
+
+  .status {
     grid-column: 1;
   }
 }
