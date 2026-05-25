@@ -1,11 +1,9 @@
 /**
- * dna-loader.js — Corruption-aware parser for Tiamat desktop .dna files.
+ * dna-loader.js — Raw MFC CArchive parser for Tiamat desktop .dna files.
  *
- * Tiamat saves designs as MFC CArchive binary.  Every known copy of these
- * files has been through a UTF-8 text-mode conversion that replaces each
- * byte ≥ 0x80 that doesn't happen to sit inside a valid multi-byte UTF-8
- * sequence with U+FFFD (EF BF BD).  This module reverses the corruption
- * where possible and parses the MFC object graph to extract nucleobases.
+ * Tiamat saves designs as MFC CArchive binary. This module reads the same
+ * raw object graph as the original application and extracts nucleobases,
+ * links, sequences, geometry flags, and custom strand colors.
  *
  * Format (from Tiamat source, Constants.h: VERSION = VERSIONABLE_SCHEMA|5):
  *   4 × COpenGLWnd* panes  (CTop / CPerspective / CSide / CFront)
@@ -64,6 +62,15 @@ export function reverseUtf8Corruption(buffer) {
     }
   }
   return out;
+}
+
+function replacementSequenceCount(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  let count = 0;
+  for (let i = 0; i < bytes.length - 2; i++) {
+    if (bytes[i] === 0xEF && bytes[i + 1] === 0xBF && bytes[i + 2] === 0xBD) count += 1;
+  }
+  return count;
 }
 
 // ─── Low-level binary reader over the recovered byte stream ─────────────────
@@ -632,16 +639,15 @@ function resolvePointer(obj) {
 // ─── Main entry point ───────────────────────────────────────────────────────
 
 /**
- * Parse a (potentially UTF-8-corrupted) Tiamat .dna binary file.
+ * Parse a raw Tiamat .dna binary file.
  * Returns { view, bases, diagnostics } compatible with Tiamat-Web's
  * model.loadBases() and scene.restoreView().
  *
- * Strategy: skip the corrupted view-pane data entirely by scanning for
- * the "Nucleobase" class definition as an anchor, then parse base data
- * from there.
+ * Strategy: skip view-pane objects by scanning for the "Nucleobase" class
+ * definition as an anchor, then parse the real MFC object graph from there.
  */
 export function parseDnaFile(arrayBuffer) {
-  const R = reverseUtf8Corruption(arrayBuffer);
+  const R = [...new Uint8Array(arrayBuffer)];
 
   // ── Locate the Nucleobase class definition ──
   const anchor = findString(R, 'Nucleobase');
@@ -651,111 +657,161 @@ export function parseDnaFile(arrayBuffer) {
   const schema = readWordAt(R, anchor - 4);
   const dataStart = anchor + 10; // byte after "Nucleobase" class name
 
-  // ── Template scan: find every base record by its structural tail ──
-  // Each base ends with: type(4) + useColor(1) + colorRGB(12) + slideSize(4) +
-  // stickyID(4) + stickyPtr(2) = 27 bytes.  For bases with no slides/sticky,
-  // the last 10 bytes are all zero.  The type field is [0-5] 00 00 00.
-  // Tail size after type field:
-  // type(4) + useColor(1) + colorRGB(12) + slideSize(4) + stickyID(4) + stickyPtr(2) = 27
-  // Schema 4+: + isRNA(1) = 28
-  // Schema 5+: + isRNA(1) + geometry(4) = 32
-  const tailSize = 27 + (schema >= 5 ? 5 : schema >= 4 ? 1 : 0);
+  const graphParse = parseNucleobaseGraph(R, dataStart, baseCount, schema);
+  if (graphParse.bases.length === baseCount) {
+    graphParse.diagnostics.recovery = 'raw binary';
+    graphParse.diagnostics.replacementSequences = replacementSequenceCount(arrayBuffer);
+    return graphParse;
+  }
+  throw new Error(`Could not parse Tiamat .dna object graph: read ${graphParse.bases.length} of ${baseCount} bases`);
+}
 
-  const records = [];
-  // Scan for the TYPE field as anchor: [0-5] 00 00 00 followed by [0/1]
-  // Then validate: slideSize+stickyID+stickyPtr = 10 zeros at offset +17 from type
-  for (let t = dataStart + 24; t < R.length - tailSize; t++) {
-    const type = R[t];
-    if (type < 0 || type > 5 || R[t + 1] !== 0 || R[t + 2] !== 0 || R[t + 3] !== 0) continue;
-    const useColor = R[t + 4];
-    if (useColor !== 0 && useColor !== 1) continue;
-    // Validate: slideSize(4)+stickyID(4)+stickyPtr(2) = 10 zeros at offset +17
-    let z = true;
-    for (let j = 17; j < 27; j++) if (R[t + j] !== 0) { z = false; break; }
-    if (!z) continue;
-    // Schema 4+: validate isRNA
-    if (schema >= 4 && R[t + 27] !== 0 && R[t + 27] !== 1) continue;
-    // Schema 5+: validate geometry
-    if (schema >= 5 && (R[t + 28] < 0 || R[t + 28] > 2 || R[t + 29] !== 0 || R[t + 30] !== 0 || R[t + 31] !== 0)) continue;
-    // Read positions (24 bytes before type)
-    const px = readDoubleAt(R, t - 24);
-    const py = readDoubleAt(R, t - 16);
-    const pz = readDoubleAt(R, t - 8);
-    if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(pz)) continue;
-    // Read pointer bools from 9 bytes before position (for simple back-ref bases)
-    const p = t - 24 - 9;
-    let isAcross = false, isDown = false, isUp = false;
-    let acrossTag = -1, downTag = -1, upTag = -1;
-    if (p >= dataStart) {
-      const a = R[p], d = R[p + 3], u = R[p + 6];
-      if ((a === 0 || a === 1) && (d === 0 || d === 1) && (u === 0 || u === 1)) {
-        isAcross = a === 1; isDown = d === 1; isUp = u === 1;
-        if (isAcross) acrossTag = wordAt(R, p + 1);
-        if (isDown) downTag = wordAt(R, p + 4);
-        if (isUp) upTag = wordAt(R, p + 7);
-      }
+function countParsedStrands(bases) {
+  const byId = new Map(bases.map((base) => [base.id, base]));
+  const visited = new Set();
+  let strands = 0;
+  const walk = (base) => {
+    let current = base;
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id);
+      current = current.down === null ? null : byId.get(current.down);
     }
-    records.push({ type, px, py, pz, isAcross, isDown, isUp, acrossTag, downTag, upTag });
-    if (records.length >= baseCount) break; // stop at expected count
-    t += tailSize + 20; // skip past this record's tail to avoid double-counting
+  };
+  bases.filter((base) => base.up === null).forEach((base) => {
+    strands += 1;
+    walk(base);
+  });
+  bases.forEach((base) => {
+    if (visited.has(base.id)) return;
+    strands += 1;
+    walk(base);
+  });
+  return strands;
+}
+
+function rawPosition(x, y, z) {
+  return {
+    x: safeNum(x),
+    y: safeNum(y),
+    z: safeNum(z)
+  };
+}
+
+function parseNucleobaseGraph(bytes, dataStart, baseCount, schema) {
+  const archive = new MfcArchiveReader(bytes);
+  archive.reader.pos = dataStart;
+  archive.mapCount = 10;
+  archive.classMap[9] = { name: 'Nucleobase', schema };
+  archive.classNameToIndex.Nucleobase = 9;
+  archive._maxObjects = baseCount + 8;
+
+  const first = { _archiveIndex: 10 };
+  archive.objectMap[10] = first;
+  archive.mapCount = 11;
+
+  const stack = [{ base: first, step: S_ACROSS, schema }];
+  try {
+    drainNucleobaseStack(stack, archive);
+
+    while (countNucleobaseObjects(archive) < baseCount && archive.reader.remaining() >= 2) {
+      const before = archive.reader.pos;
+      const obj = readObjectInline(archive, stack, null, S_DONE, schema);
+      if (obj === DEFERRED) drainNucleobaseStack(stack, archive);
+      if (archive.reader.pos === before) archive.reader.skip(2);
+    }
+  } catch {
+    // Return the partial parse; the caller rejects incomplete object graphs.
   }
 
-  // ── Build base array with topology from tag back-references ──
-  // Records are in MFC depth-first serialization order.
-  // MFC object index for record[i] = 10 + i (index 9 = class, 10 = first object).
-  // A back-ref tag value V points to record[V - 10].
-  const OBJ_OFFSET = 10;
-  const resolveTag = (tag) => {
-    if (tag <= 0 || tag === UNKNOWN) return null;
-    const idx = tag - OBJ_OFFSET;
-    return (idx >= 0 && idx < records.length) ? idx : null;
+  const objects = Object.values(archive.objectMap)
+    .filter((obj) => obj && obj.type !== undefined && Number.isFinite(obj.px) && Number.isFinite(obj.py) && Number.isFinite(obj.pz))
+    .sort((a, b) => a._archiveIndex - b._archiveIndex)
+    .slice(0, baseCount);
+
+  if (objects.length === 0) {
+    return { view: null, bases: [], diagnostics: { importedBases: 0 } };
+  }
+
+  const idByArchiveIndex = new Map(objects.map((obj, id) => [obj._archiveIndex, id]));
+  const pointerId = (obj) => {
+    const archiveIndex = resolvePointer(obj);
+    return archiveIndex === null ? null : idByArchiveIndex.get(archiveIndex) ?? null;
   };
 
-  const typeMap = schema <= 3
-    ? ['A', 'T', 'C', 'G', 'X', 'X']   // schema ≤3: no Uracil, C=2, G=3, X=4
-    : BASE_TYPE_MAP;
+  const bases = objects.map((obj, id) => {
+    const strandColor = obj.useStrandColor
+      ? rgbToHex(obj.strandColorR, obj.strandColorG, obj.strandColorB)
+      : null;
+    return {
+      id,
+      type: obj.type ?? 'X',
+      molecule: obj.isRNA ? 'RNA' : 'DNA',
+      geometry: obj.geometry ?? (schema < 3 ? 'B' : 'Free'),
+      position: rawPosition(obj.px, obj.py, obj.pz),
+      up: obj.isUp ? pointerId(obj._upObj) : null,
+      down: obj.isDown ? pointerId(obj._downObj) : null,
+      across: obj.isAcross ? pointerId(obj._acrossObj) : null,
+      slide: (obj._slideObjs ?? []).map(pointerId).filter((value) => value !== null),
+      sticky: pointerId(obj._stickyObj),
+      stickyID: obj.stickyID ?? 0,
+      strand: 0,
+      circular: false,
+      top: false,
+      preset: (obj.type ?? 'X') !== 'X',
+      temp: false,
+      useStrandColor: Boolean(obj.useStrandColor),
+      strandColor,
+      constraints: {}
+    };
+  });
 
-  const bases = records.map((r, id) => ({
-    id,
-    type: typeMap[r.type] ?? 'X',
-    molecule: 'DNA',
-    geometry: schema < 3 ? 'B' : 'Free',
-    position: { x: safeNum(r.px), y: safeNum(r.py), z: safeNum(r.pz) },
-    up: r.isUp ? resolveTag(r.upTag) : null,
-    down: r.isDown ? resolveTag(r.downTag) : null,
-    across: r.isAcross ? resolveTag(r.acrossTag) : null,
-    slide: [],
-    sticky: null,
-    stickyID: 0,
-    strand: 0,
-    circular: false,
-    top: false,
-    preset: (typeMap[r.type] ?? 'X') !== 'X',
-    temp: false,
-    useStrandColor: false,
-    strandColor: null,
-    constraints: {}
-  }));
+  repairReciprocalLinks(bases, 'up', 'down');
+  repairReciprocalLinks(bases, 'down', 'up');
+  repairReciprocalLinks(bases, 'across', 'across');
+  const strands = countParsedStrands(bases);
 
   return {
     view: null,
     bases,
     diagnostics: {
-      format: 'Tiamat .dna (template scan)',
+      format: 'Tiamat .dna (MFC object graph)',
       importedBases: bases.length,
       expectedBases: baseCount,
       schema,
-      strands: 0,
+      strands,
       pairs: bases.filter((b) => b.across !== null).length / 2,
-      corrupted: true
+      corrupted: false
     }
   };
 }
 
-function wordAt(bytes, offset) {
-  const lo = bytes[offset] === UNKNOWN ? 0 : bytes[offset];
-  const hi = bytes[offset + 1] === UNKNOWN ? 0 : bytes[offset + 1];
-  return (hi << 8) | lo;
+function drainNucleobaseStack(stack, archive) {
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    if (!frame.base) continue;
+    if (frame.childResult !== undefined) {
+      assignChildResult(frame.base, frame.step, frame.childResult);
+      stack.push({ base: frame.base, step: frame.step, schema: frame.schema });
+      continue;
+    }
+    readNucleobaseFields(frame.base, frame.step, frame.schema, archive.reader, archive, stack);
+  }
+}
+
+function countNucleobaseObjects(archive) {
+  let count = 0;
+  for (const obj of Object.values(archive.objectMap)) {
+    if (obj?.type !== undefined || obj?.isAcross !== undefined) count++;
+  }
+  return count;
+}
+
+function repairReciprocalLinks(bases, key, reciprocalKey) {
+  bases.forEach((base) => {
+    const target = bases[base[key]];
+    if (!target || target[reciprocalKey] === base.id) return;
+    if (target[reciprocalKey] === null) target[reciprocalKey] = base.id;
+  });
 }
 
 function readDoubleAt(bytes, offset) {

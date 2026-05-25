@@ -334,7 +334,7 @@ export class TiamatScene extends EventTarget {
       this.endPointerGesture();
     });
     this.renderer.domElement.addEventListener('wheel', (event) => this.onWheel(event), { passive: false });
-    this.renderer.domElement.addEventListener('dblclick', () => this.toggleActiveView());
+    this.renderer.domElement.addEventListener('dblclick', (event) => this.onDoubleClick(event));
     window.addEventListener('resize', () => this.resize());
   }
 
@@ -357,6 +357,46 @@ export class TiamatScene extends EventTarget {
 
   toggleActiveView() {
     this.setViewMode(this.viewMode === 'quad' ? this.activeView : 'quad');
+  }
+
+  onDoubleClick(event) {
+    const view = this.viewAtEvent(event);
+    if (!view) return;
+    this.activeView = view.id;
+    const hit = this.hitBase(event, view);
+    if (hit !== null) {
+      this.zoomToBase(hit, view);
+      this.dispatchEvent(new CustomEvent('focus-base', { detail: { id: hit } }));
+      return;
+    }
+    this.toggleActiveView();
+  }
+
+  zoomToBase(id, view = null) {
+    const base = this.model.getBase(id);
+    if (!base) return;
+    const target = vectorFrom(base.position);
+    if (view?.id && view.id !== 'perspective') {
+      const control = this.orthoControls[view.id];
+      if (control) {
+        control.target = target.clone();
+        control.zoom = THREE.MathUtils.clamp((Number(control.zoom) || 1) * 2, 0.05, 80);
+        this.updateOrthographicCameras();
+      }
+    } else {
+      const direction = this.camera.position.clone().sub(this.controls.target);
+      if (direction.lengthSq() < 0.0001) direction.set(1, 1, 1);
+      const distance = THREE.MathUtils.clamp(direction.length() * 0.45, 1.4, 8);
+      this.controls.target.copy(target);
+      this.camera.position.copy(target).add(direction.normalize().multiplyScalar(distance));
+      this.camera.lookAt(target);
+      this.camera.updateProjectionMatrix();
+      this.camera.updateMatrixWorld();
+      this.controls.update();
+    }
+    this.cameraRevision += 1;
+    this.invalidateSelectionIndexes();
+    this.requestRender();
   }
 
   renderModel() {

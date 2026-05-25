@@ -4,11 +4,37 @@ import * as THREE from 'three';
 import { TiamatModel } from '../src/model.js';
 import { DOWN_DISTANCE, TIAMAT_GEOMETRY } from '../src/constants.js';
 import { vectorFrom } from '../src/geometry.js';
-import { fullProjectJson, parseJsonProject, parseOxViewProject } from '../src/io.js';
+import { fullProjectJson, parseDnaFile, parseJsonProject, parseOxViewProject } from '../src/io.js';
 import { ScreenSelectionIndex } from '../src/selection-index.js';
 import { isSchematicRunNeighbor } from '../src/scene.js';
 
 const OXVIEW_FIXTURE = '/Users/m.matthies/Data/Dietz_Designs/oxview/42hb_v40_polyT.oxview';
+const TIAMAT_DNA_FIXTURES = [
+  {
+    path: '/Users/m.matthies/Downloads/7z2600-mac/Tiamat design/Figure 4/[PT]_Cairo_p7249_core+edge.dna',
+    bases: 14267,
+    strands: 209,
+    pairs: 6788
+  },
+  {
+    path: '/Users/m.matthies/Downloads/7z2600-mac/Tiamat design/Figure 4/[PT]_Floret_p8064_tile.dna',
+    bases: 15831,
+    strands: 260,
+    pairs: 7556
+  },
+  {
+    path: '/Users/m.matthies/Downloads/7z2600-mac/Tiamat design/Figure 4/[PT]_Prism_p7249_tile.dna',
+    bases: 14188,
+    strands: 236,
+    pairs: 6730
+  },
+  {
+    path: '/Users/m.matthies/Downloads/7z2600-mac/Tiamat design/Figure 4/[RH]_p7249_tile.dna',
+    bases: 14101,
+    strands: 213,
+    pairs: 6656
+  }
+];
 const tests = [];
 
 test('createHelix creates paired duplex with Tiamat graph links', () => {
@@ -194,6 +220,28 @@ test('oxView parser accepts both pair and bp fields', () => {
   const model = new TiamatModel();
   model.loadBases(data.bases);
   assert.equal(model.bases.filter((base) => base.across !== null).length / 2, 2);
+});
+
+test('raw Tiamat .dna fixtures import through MFC object graph with strand colors', () => {
+  const available = TIAMAT_DNA_FIXTURES.filter((fixture) => existsSync(fixture.path));
+  if (!available.length) return 'skipped: fixtures not found';
+  available.forEach((fixture) => {
+    const buffer = readFileSync(fixture.path);
+    const data = parseDnaFile(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+    assert.equal(data.diagnostics.recovery, 'raw binary');
+    assert.equal(data.diagnostics.format, 'Tiamat .dna (MFC object graph)');
+    assert.equal(data.diagnostics.schema, 3);
+    assert.equal(data.bases.length, fixture.bases);
+    assert.equal(data.diagnostics.expectedBases, fixture.bases);
+    assert.equal(data.diagnostics.strands, fixture.strands);
+    assert.equal(data.diagnostics.pairs, fixture.pairs);
+    assert.deepEqual([...new Set(data.bases.filter((base) => base.useStrandColor).map((base) => base.strandColor))].sort(), [
+      '#27aae1',
+      '#bcbec0',
+      '#f7941d'
+    ]);
+    assert.equal(data.bases.filter((base) => base.useStrandColor).length, fixture.bases);
+  });
 });
 
 test('cadnano v2 JSON imports scaffold/staple graph and colors', () => {

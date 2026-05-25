@@ -402,6 +402,7 @@ export class TiamatUI {
     document.querySelector('#fileInput').addEventListener('change', (event) => this.importFile(event));
     window.addEventListener('keydown', (event) => this.handleKeyDown(event));
     this.scene.addEventListener('select-base', (event) => this.handleSceneSelection(event.detail));
+    this.scene.addEventListener('focus-base', (event) => this.model.select(event.detail.id));
     this.scene.addEventListener('select-box', (event) => this.applySelection(event.detail.ids, event.detail.additive));
     this.scene.addEventListener('render-settings', (event) => this.syncRenderButtons(event.detail));
     this.scene.addEventListener('constraint-blocked', () => this.status('Transform blocked by Tiamat constraints'));
