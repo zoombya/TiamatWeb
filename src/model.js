@@ -290,6 +290,89 @@ export class TiamatModel extends EventTarget {
     this.emit();
   }
 
+  designSequence(options = {}) {
+    if (!this.bases.length) return { changed: 0, editable: 0, issues: 0, timedOut: false, passes: 0 };
+    const preserveExisting = options.preserveExisting !== false;
+    const scopeIds = options.scope === 'selection' && this.selectedIds.size
+      ? new Set(this.selectedIds)
+      : new Set(this.bases.map((base) => base.id));
+    const editable = new Set(this.bases
+      .filter((base) => scopeIds.has(base.id) && (!preserveExisting || base.type === 'X'))
+      .map((base) => base.id));
+    if (!editable.size) return { changed: 0, editable: 0, issues: 0, timedOut: false, passes: 0 };
+
+    const settings = normalizeSequenceDesignOptions(options);
+    this.commit('sequence design');
+    const before = new Map(this.bases.map((base) => [base.id, base.type]));
+    const fixed = new Set(this.bases.filter((base) => !editable.has(base.id)).map((base) => base.id));
+    this.bases.forEach((base) => {
+      base.preset = fixed.has(base.id);
+      if (base.type === 'U' && base.molecule !== 'RNA') base.type = 'T';
+    });
+
+    const forbidden = buildForbiddenKmers(this, settings, fixed);
+    const leaders = this.bases.filter((base) => editable.has(base.id) && !hasEarlierEditablePartner(this, base, editable));
+    leaders.forEach((base) => this.assignWeightedBase(base, settings, editable, fixed));
+
+    const deadline = Date.now() + settings.timeoutMs;
+    let issues = sequenceDesignIssues(this, settings, forbidden, editable, fixed);
+    let pass = 0;
+    while (issues.length && Date.now() < deadline && pass < settings.maxPasses) {
+      pass += 1;
+      for (const issue of issues) {
+        if (Date.now() >= deadline) break;
+        const target = firstEditableInIssue(this, issue, editable, fixed);
+        if (target) this.assignDifferentWeightedBase(target, settings, editable, fixed);
+      }
+      issues = sequenceDesignIssues(this, settings, forbidden, editable, fixed);
+    }
+
+    this.bases.forEach((base) => {
+      if (base.molecule === 'RNA' && base.type === 'T') base.type = 'U';
+      if (base.molecule !== 'RNA' && base.type === 'U') base.type = 'T';
+      base.preset = base.type !== 'X';
+    });
+    this.updateGeometryMeasurements();
+    this.emit();
+
+    return {
+      changed: this.bases.filter((base) => before.get(base.id) !== base.type).length,
+      editable: editable.size,
+      issues: issues.length,
+      timedOut: issues.length > 0 && Date.now() >= deadline,
+      passes: pass
+    };
+  }
+
+  assignWeightedBase(base, settings, editable, fixed) {
+    const partner = forcedPartner(this, base, editable, fixed);
+    if (partner) return this.setDesignedType(base, complementFor(partner), editable, fixed);
+    this.setDesignedType(base, weightedBase(settings, base.molecule), editable, fixed);
+  }
+
+  assignDifferentWeightedBase(base, settings, editable, fixed) {
+    const partner = forcedPartner(this, base, editable, fixed);
+    if (partner) return this.setDesignedType(base, complementFor(partner), editable, fixed);
+    const oldType = base.type;
+    let next = oldType;
+    for (let i = 0; i < 12 && next === oldType; i += 1) next = weightedBase(settings, base.molecule);
+    if (next === oldType) {
+      const alphabet = base.molecule === 'RNA' ? ['A', 'U', 'C', 'G'] : ['A', 'T', 'C', 'G'];
+      next = alphabet[(alphabet.indexOf(oldType) + 1) % alphabet.length] ?? alphabet[0];
+    }
+    this.setDesignedType(base, next, editable, fixed);
+  }
+
+  setDesignedType(base, type, editable, fixed) {
+    if (!base || fixed.has(base.id)) return;
+    base.type = normalizeBase(type, base.molecule);
+    [base.across, base.sticky].forEach((id) => {
+      const partner = this.getBase(id);
+      if (!partner || fixed.has(partner.id) || !editable.has(partner.id)) return;
+      partner.type = normalizeBase(complementFor(base), partner.molecule);
+    });
+  }
+
   createHelix(sequence, options) {
     const clean = cleanSequence(sequence, options.molecule);
     if (!clean) return 0;
@@ -973,6 +1056,163 @@ function bezierPoint(points, t) {
     }
   }
   return working[0];
+}
+
+function normalizeSequenceDesignOptions(options = {}) {
+  const sequenceLimit = clampInt(options.sequenceLimit, 1, 12, 6);
+  const repeatLimit = clampInt(options.repeatLimit, 2, 12, 4);
+  const gRepeatLimit = clampInt(options.gRepeatLimit, 2, 12, 4);
+  const gcTarget = THREE.MathUtils.clamp(Number(options.gcTarget) || 0.5, 0, 1);
+  return {
+    sequenceLimit,
+    repeatLimit,
+    gRepeatLimit,
+    gcTarget,
+    useSequenceLimit: options.useSequenceLimit !== false,
+    useRepeatLimit: options.useRepeatLimit !== false,
+    useGRepeatLimit: options.useGRepeatLimit !== false,
+    useGC: options.useGC !== false,
+    useSliders: options.useSliders !== false,
+    genome: cleanSequence(options.genome ?? '', 'DNA'),
+    timeoutMs: Math.max(100, (Number(options.timeout) || 4) * 1000),
+    maxPasses: Math.max(2, Math.min(80, Number(options.maxPasses) || 24))
+  };
+}
+
+function clampInt(value, min, max, fallback) {
+  const number = Math.floor(Number(value));
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, number));
+}
+
+function weightedBase(settings, molecule = 'DNA') {
+  const gc = settings.useGC ? settings.gcTarget : 0.5;
+  const roll = Math.random();
+  const aMax = (1 - gc) / 2;
+  const tMax = 1 - gc;
+  const cMax = tMax + gc / 2;
+  if (roll < aMax) return 'A';
+  if (roll < tMax) return molecule === 'RNA' ? 'U' : 'T';
+  if (roll < cMax) return 'C';
+  return 'G';
+}
+
+function buildForbiddenKmers(model, settings, fixed) {
+  const forbidden = new Set();
+  if (!settings.useSequenceLimit) return forbidden;
+  addForbiddenSequence(forbidden, settings.genome, settings.sequenceLimit);
+  addForbiddenSequence(forbidden, complementSequence(settings.genome), settings.sequenceLimit);
+  model.bases.forEach((base) => {
+    if (!allFixed(model, base, settings.sequenceLimit, fixed)) return;
+    const sequence = subsequenceFrom(model, base, settings.sequenceLimit);
+    if (sequence.length === settings.sequenceLimit && !sequence.includes('X')) forbidden.add(sequence.replaceAll('U', 'T'));
+  });
+  return forbidden;
+}
+
+function addForbiddenSequence(forbidden, sequence, size) {
+  for (let i = 0; i <= sequence.length - size; i += 1) forbidden.add(sequence.slice(i, i + size).replaceAll('U', 'T'));
+}
+
+function complementSequence(sequence) {
+  return String(sequence).split('').map((base) => ({
+    A: 'T',
+    T: 'A',
+    U: 'A',
+    C: 'G',
+    G: 'C'
+  }[base] ?? 'X')).join('');
+}
+
+function hasEarlierEditablePartner(model, base, editable) {
+  return [base.across, base.sticky].some((id) => {
+    const partner = model.getBase(id);
+    return partner && editable.has(partner.id) && partner.id < base.id;
+  });
+}
+
+function forcedPartner(model, base, editable, fixed) {
+  return [base.across, base.sticky]
+    .map((id) => model.getBase(id))
+    .find((partner) => partner && fixed.has(partner.id) && !editable.has(partner.id) && partner.type !== 'X') ?? null;
+}
+
+function sequenceDesignIssues(model, settings, forbidden, editable, fixed) {
+  const issues = [];
+  if (settings.useSliders) {
+    model.bases.forEach((base) => {
+      if (fixed.has(base.id)) return;
+      (base.slide ?? []).forEach((id) => {
+        const other = model.getBase(id);
+        if (other && base.type === complementFor(other)) issues.push({ type: 'slide', ids: [base.id, other.id] });
+      });
+    });
+  }
+
+  const seen = new Map();
+  model.bases.forEach((base) => {
+    const maxWindow = Math.max(settings.sequenceLimit, settings.repeatLimit, settings.gRepeatLimit);
+    const sequence = subsequenceFrom(model, base, maxWindow);
+    const ids = subsequenceIds(model, base, maxWindow);
+    if (settings.useRepeatLimit && sequence.length >= settings.repeatLimit) {
+      const run = sequence.slice(0, settings.repeatLimit);
+      if (!allFixed(model, base, settings.repeatLimit, fixed) && sameChars(run)) issues.push({ type: 'repeat', ids: ids.slice(0, settings.repeatLimit) });
+    }
+    if (settings.useGRepeatLimit && sequence.length >= settings.gRepeatLimit) {
+      const run = sequence.slice(0, settings.gRepeatLimit);
+      if (!allFixed(model, base, settings.gRepeatLimit, fixed) && sameChars(run) && run[0] === 'G') issues.push({ type: 'g-repeat', ids: ids.slice(0, settings.gRepeatLimit) });
+    }
+    if (settings.useSequenceLimit && sequence.length >= settings.sequenceLimit) {
+      const kmer = sequence.slice(0, settings.sequenceLimit).replaceAll('U', 'T');
+      const kmerIds = ids.slice(0, settings.sequenceLimit);
+      if (!kmer.includes('X') && !allFixed(model, base, settings.sequenceLimit, fixed)) {
+        if (forbidden.has(kmer)) issues.push({ type: 'forbidden', ids: kmerIds });
+        const previous = seen.get(kmer);
+        if (previous) issues.push({ type: 'duplicate', ids: kmerIds, other: previous });
+        else seen.set(kmer, kmerIds);
+      }
+    }
+  });
+
+  if (settings.useGC) {
+    const designed = model.bases.filter((base) => editable.has(base.id));
+    const gc = designed.filter((base) => base.type === 'G' || base.type === 'C').length / Math.max(1, designed.length);
+    if (Math.abs(gc - settings.gcTarget) > 0.08) {
+      const wantsGc = gc < settings.gcTarget;
+      const target = designed.find((base) => wantsGc ? base.type === 'A' || base.type === 'T' || base.type === 'U' : base.type === 'G' || base.type === 'C');
+      if (target) issues.push({ type: 'gc', ids: [target.id] });
+    }
+  }
+  return issues;
+}
+
+function sameChars(sequence) {
+  return sequence.length > 0 && sequence.split('').every((letter) => letter === sequence[0]);
+}
+
+function subsequenceFrom(model, start, size) {
+  return subsequenceIds(model, start, size).map((id) => model.getBase(id)?.type ?? 'X').join('');
+}
+
+function subsequenceIds(model, start, size) {
+  const ids = [];
+  let current = start;
+  while (current && ids.length < size && !ids.includes(current.id)) {
+    ids.push(current.id);
+    current = current.down === null ? null : model.getBase(current.down);
+  }
+  return ids;
+}
+
+function allFixed(model, start, size, fixed) {
+  const ids = subsequenceIds(model, start, size);
+  return ids.length === size && ids.every((id) => fixed.has(id));
+}
+
+function firstEditableInIssue(model, issue, editable, fixed) {
+  return (issue.ids ?? [])
+    .map((id) => model.getBase(id))
+    .find((base) => base && editable.has(base.id) && !fixed.has(base.id)) ?? null;
 }
 
 function createInitialSequence(sequence, molecule, count, mode = 'sequence') {

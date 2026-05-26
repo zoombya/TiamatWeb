@@ -11,6 +11,8 @@ const SELECTED_SCALE = 1.35;
 const VIEW_GAP = 8;
 const PICK_RADIUS_PX = 11;
 const WIDTH_TO_RADIUS = { 1: 0.01, 3: 0.025, 5: 0.05, 7: 0.075 };
+const BASE_LABEL_SCALE = 0.18;
+const PRIME_LABEL_SCALE = 0.075;
 
 export class TiamatScene extends EventTarget {
   constructor(viewport, model) {
@@ -131,6 +133,11 @@ export class TiamatScene extends EventTarget {
     this.createGuide = this.makeLines(0xf6d365);
     this.createGuide.visible = false;
     this.scene.add(this.createGuide);
+    this.freeformPreview = this.makeLines(0x66d9e8);
+    this.freeformPreview.visible = false;
+    this.freeformMarkers = new THREE.Group();
+    this.freeformLabels = new THREE.Group();
+    this.scene.add(this.freeformPreview, this.freeformMarkers, this.freeformLabels);
   }
 
   initPools() {
@@ -871,14 +878,13 @@ export class TiamatScene extends EventTarget {
   rebuildPrimeLabels() {
     this.model.bases.forEach((base) => {
       if (this.schematic.hiddenIds.has(base.id)) return;
-      if (this.connectionMode === 'lines' && cameraDistanceSq(this.camera, base) > 1000) return;
       if (base.up === null) {
-        const label = makeLabel("5'");
+        const label = makeLabel("5'", { overlay: true });
         label.position.copy(baseSitePosition(base)).add(new THREE.Vector3(0, 0.34, 0));
         this.labelGroup.add(label);
       }
       if (base.down === null) {
-        const label = makeLabel("3'");
+        const label = makeLabel("3'", { overlay: true });
         label.position.copy(baseSitePosition(base)).add(new THREE.Vector3(0, -0.34, 0));
         this.labelGroup.add(label);
       }
@@ -1391,6 +1397,38 @@ export class TiamatScene extends EventTarget {
     this.requestRender();
   }
 
+  setFreeformPreview(points = []) {
+    this.freeformMarkers.clear();
+    this.freeformLabels.clear();
+    const vectors = points.map(vectorFrom);
+    const positions = [];
+    if (vectors.length > 1) {
+      const samples = sampleBezier(vectors, Math.max(18, vectors.length * 16));
+      samples.slice(0, -1).forEach((point, index) => pushPoints(positions, point, samples[index + 1]));
+    }
+    this.setLinePositions(this.freeformPreview, positions);
+    this.freeformPreview.visible = positions.length > 0;
+    vectors.forEach((point, index) => {
+      const marker = new THREE.Mesh(
+        new THREE.SphereGeometry(index === 0 || index === vectors.length - 1 ? 0.095 : 0.07, 16, 10),
+        new THREE.MeshBasicMaterial({ color: index === 0 ? 0x7cff6b : index === vectors.length - 1 ? 0xffd166 : 0x66d9e8 })
+      );
+      marker.position.copy(point);
+      this.freeformMarkers.add(marker);
+    });
+    if (vectors.length) {
+      const start = makeLabel("5'", { overlay: true });
+      start.position.copy(vectors[0]).add(new THREE.Vector3(0, 0.18, 0));
+      this.freeformLabels.add(start);
+    }
+    if (vectors.length > 1) {
+      const end = makeLabel("3'", { overlay: true });
+      end.position.copy(vectors.at(-1)).add(new THREE.Vector3(0, -0.18, 0));
+      this.freeformLabels.add(end);
+    }
+    this.requestRender();
+  }
+
   updateSelectionBoxElement() {
     const box = this.boxGesture;
     const left = Math.min(box.startX, box.endX);
@@ -1528,6 +1566,7 @@ export class TiamatScene extends EventTarget {
 
   orientLabels() {
     this.labelGroup.children.forEach((label) => label.quaternion.copy(this.camera.quaternion));
+    this.freeformLabels.children.forEach((label) => label.quaternion.copy(this.camera.quaternion));
   }
 
   updateOrthographicCameras() {
@@ -1821,7 +1860,22 @@ function pushConstraintSegment(list, colors, a, b, color) {
   colors.push(color.r, color.g, color.b, color.r, color.g, color.b);
 }
 
-function makeLabel(text) {
+function sampleBezier(points, steps) {
+  if (points.length < 2) return points;
+  const samples = [];
+  for (let i = 0; i <= steps; i += 1) samples.push(bezierPoint(points, i / steps));
+  return samples;
+}
+
+function bezierPoint(points, t) {
+  const working = points.map((point) => point.clone());
+  for (let level = points.length - 1; level > 0; level -= 1) {
+    for (let index = 0; index < level; index += 1) working[index].lerp(working[index + 1], t);
+  }
+  return working[0];
+}
+
+function makeLabel(text, { overlay = false } = {}) {
   const canvas = document.createElement('canvas');
   canvas.width = 96;
   canvas.height = 96;
@@ -1830,14 +1884,21 @@ function makeLabel(text) {
   ctx.shadowColor = 'transparent';
   ctx.shadowBlur = 0;
   ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 42px system-ui, sans-serif';
+  ctx.font = `bold ${overlay ? 26 : 42}px system-ui, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, 48, 49);
   const texture = new THREE.CanvasTexture(canvas);
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true }));
-  sprite.material.depthTest = true;
-  sprite.scale.set(0.18, 0.18, 0.18);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: !overlay,
+    depthWrite: false,
+    sizeAttenuation: !overlay
+  }));
+  sprite.renderOrder = overlay ? 2000 : 0;
+  const scale = overlay ? PRIME_LABEL_SCALE : BASE_LABEL_SCALE;
+  sprite.scale.set(scale, scale, scale);
   return sprite;
 }
 

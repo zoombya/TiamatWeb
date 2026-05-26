@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { BASES, CONSTRAINTS, STRAND_COLORS, TIAMAT_GEOMETRY } from './constants.js';
 import { cleanSequence, formatVector } from './geometry.js';
-import { dnaJson, download, fullProjectJson, mergeMetadataFromDna, oxDnaText, parseOxDnaTopConf, parseDnaFile, parseJsonProject, parseOxViewProject, parsePdb, parseSequenceText, pdbText, sequenceText } from './io.js';
+import { appendImportedDesigns, download, fullProjectJson, mergeImportedDesigns, mergeMetadataFromDna, oxViewJson, parseOxDnaTopConf, parseDnaFile, parseJsonProject, parseOxViewProject, parsePdb, parseSequenceText } from './io.js';
 
 const RENDER_SETTINGS_KEY = 'tiamat-web.render-settings.v2';
 
@@ -34,11 +34,11 @@ export function mountApp(root) {
           <button class="icon" data-action="deleteSelected" title="Delete selected">⌫</button>
           <button class="icon" data-action="frame" title="Frame view">◎</button>
           <input id="fileInput" class="fileInput" type="file" accept=".json,.dnajson,.cadnano,.oxview,.pdb,.dna,.top,.oxdna,.txt" multiple />
+          <input id="appendFileInput" class="fileInput" type="file" accept=".json,.dnajson,.cadnano,.oxview,.dna,.top,.oxdna" multiple />
           <label class="buttonLike" for="fileInput">Import</label>
+          <label class="buttonLike" for="appendFileInput">Add</label>
           <button data-action="saveProject">Save</button>
-          <button data-action="exportJson">DNAJSON</button>
-          <button data-action="exportPdb">PDB</button>
-          <button data-action="exportOx">oxDNA</button>
+          <button data-action="exportOxView">oxView</button>
           <button data-action="exportPng">PNG</button>
         </nav>
         <div id="status" class="status">Ready</div>
@@ -58,69 +58,7 @@ export function mountApp(root) {
           </div>
         </section>
 
-        <section class="panel toolCard">
-          <h2>Selection Tools</h2>
-          <div class="segmented" aria-label="Selection operation">
-            <button class="selected" data-selection-op="replace">Replace</button>
-            <button data-selection-op="add">Add</button>
-            <button data-selection-op="subtract">Subtract</button>
-          </div>
-          <div class="buttonrow compactActions">
-            <button data-action="selectAll">All</button>
-            <button data-action="clearSelection">Clear</button>
-          </div>
-        </section>
-
-        <section class="panel toolCard" data-context="selected">
-          <h2>Base Identity</h2>
-          <div class="basegrid" aria-label="Base type">
-            <button data-base="A">A</button><button data-base="T">T</button><button data-base="U">U</button>
-            <button data-base="G">G</button><button data-base="C">C</button><button data-base="X">X</button>
-          </div>
-        </section>
-
-        <details class="panel toolCard" open>
-          <summary><h2>Render</h2></summary>
-          <label>Connections</label>
-          <div class="segmented" aria-label="Connection mode">
-            <button data-connection-mode="lines">Lines</button>
-            <button class="selected" data-connection-mode="cylinders">Cylinders</button>
-          </div>
-          <label>Schematic simplification</label>
-          <div class="segmented" aria-label="Schematic display">
-            <button data-schematic-display="detailed">Detailed</button>
-            <button class="selected" data-schematic-display="mixed">Mixed</button>
-            <button data-schematic-display="schematic">Schematic</button>
-          </div>
-          <div class="segmented" aria-label="Simplify mode">
-            <button data-simplify-mode="always">Always</button>
-            <button data-simplify-mode="sometimes">Sometimes</button>
-            <button class="selected" data-simplify-mode="never">Never</button>
-          </div>
-          <label>Strand lines</label>
-          <div class="segmented" aria-label="Strand line width">
-            <button data-line-width="1">1</button>
-            <button data-line-width="3">3</button>
-            <button class="selected" data-line-width="5">5</button>
-          </div>
-          <label>Pair lines</label>
-          <div class="segmented" aria-label="Pair line width">
-            <button data-base-line-width="1">1</button>
-            <button class="selected" data-base-line-width="3">3</button>
-            <button data-base-line-width="5">5</button>
-          </div>
-          <label class="checkline"><input type="checkbox" data-render-visible="grid" checked> Grid</label>
-          <label class="checkline"><input type="checkbox" data-render-visible="pairs" checked> Base pairs</label>
-          <label class="checkline"><input type="checkbox" data-render-visible="slides" checked> Slides</label>
-          <label class="checkline"><input type="checkbox" data-render-visible="sticky" checked> Sticky ends</label>
-          <label class="checkline"><input type="checkbox" data-render-visible="bbox"> Bounding box</label>
-          <label class="checkline"><input type="checkbox" data-render-visible="primeMarkers" checked> 5'/3' markers</label>
-          <label class="checkline"><input type="checkbox" data-render-visible="orientation"> Base directions</label>
-          <label class="checkline"><input type="checkbox" data-render-visible="constraints"> Constraints</label>
-          <label class="checkline"><input type="checkbox" data-render-visible="constraintGuard"> Constrain transforms</label>
-        </details>
-
-        <details class="panel toolCard" open>
+        <details class="panel toolCard">
           <summary><h2>Create</h2></summary>
           <label>Sequence</label>
           <textarea id="sequenceInput" spellcheck="false">ATGCGTACGCTA</textarea>
@@ -164,7 +102,97 @@ export function mountApp(root) {
           <div id="createState" class="selection">Create mode idle</div>
         </details>
 
-        <details class="panel toolCard" data-context="selection-tools" open>
+        <section class="panel toolCard">
+          <h2>Selection Tools</h2>
+          <div class="segmented" aria-label="Selection operation">
+            <button class="selected" data-selection-op="replace">Replace</button>
+            <button data-selection-op="add">Add</button>
+            <button data-selection-op="subtract">Subtract</button>
+          </div>
+          <div class="buttonrow compactActions">
+            <button data-action="selectAll">All</button>
+            <button data-action="clearSelection">Clear</button>
+          </div>
+        </section>
+
+        <details class="panel toolCard" data-context="selected">
+          <summary><h2>Base Identity</h2></summary>
+          <div class="basegrid" aria-label="Base type">
+            <button data-base="A">A</button><button data-base="T">T</button><button data-base="U">U</button>
+            <button data-base="G">G</button><button data-base="C">C</button><button data-base="X">X</button>
+          </div>
+        </details>
+
+        <details class="panel toolCard">
+          <summary><h2>Sequence Design</h2></summary>
+          <div class="grid2">
+            <label>K-mer <input id="seqLimitInput" type="number" min="1" max="12" step="1" value="6"></label>
+            <label>Repeat <input id="repeatLimitInput" type="number" min="2" max="12" step="1" value="4"></label>
+            <label>G repeat <input id="gRepeatLimitInput" type="number" min="2" max="12" step="1" value="4"></label>
+            <label>GC <input id="gcTargetInput" type="number" min="0" max="1" step="0.01" value="0.5"></label>
+            <label>Timeout <input id="seqTimeoutInput" type="number" min="1" max="120" step="1" value="4"></label>
+            <label>Scope
+              <select id="seqScopeInput">
+                <option value="all">All</option>
+                <option value="selection">Selection</option>
+              </select>
+            </label>
+          </div>
+          <label class="checkline"><input id="seqPreserveInput" type="checkbox" checked> Preserve set bases</label>
+          <label class="checkline"><input id="seqUniqueInput" type="checkbox" checked> Unique k-mers</label>
+          <label class="checkline"><input id="seqRepeatInput" type="checkbox" checked> Limit repeats</label>
+          <label class="checkline"><input id="seqGRepeatInput" type="checkbox" checked> Limit G-runs</label>
+          <label class="checkline"><input id="seqGCInput" type="checkbox" checked> GC target</label>
+          <label class="checkline"><input id="seqSlidersInput" type="checkbox" checked> Avoid slider complements</label>
+          <label>Genome</label>
+          <textarea id="seqGenomeInput" spellcheck="false"></textarea>
+          <div class="buttonrow">
+            <button data-action="designSequence">Design</button>
+          </div>
+        </details>
+
+        <details class="panel toolCard">
+          <summary><h2>Render</h2></summary>
+          <label>Connections</label>
+          <div class="segmented" aria-label="Connection mode">
+            <button data-connection-mode="lines">Lines</button>
+            <button class="selected" data-connection-mode="cylinders">Cylinders</button>
+          </div>
+          <label>Schematic simplification</label>
+          <div class="segmented" aria-label="Schematic display">
+            <button data-schematic-display="detailed">Detailed</button>
+            <button class="selected" data-schematic-display="mixed">Mixed</button>
+            <button data-schematic-display="schematic">Schematic</button>
+          </div>
+          <div class="segmented" aria-label="Simplify mode">
+            <button data-simplify-mode="always">Always</button>
+            <button data-simplify-mode="sometimes">Sometimes</button>
+            <button class="selected" data-simplify-mode="never">Never</button>
+          </div>
+          <label>Strand lines</label>
+          <div class="segmented" aria-label="Strand line width">
+            <button data-line-width="1">1</button>
+            <button data-line-width="3">3</button>
+            <button class="selected" data-line-width="5">5</button>
+          </div>
+          <label>Pair lines</label>
+          <div class="segmented" aria-label="Pair line width">
+            <button data-base-line-width="1">1</button>
+            <button class="selected" data-base-line-width="3">3</button>
+            <button data-base-line-width="5">5</button>
+          </div>
+          <label class="checkline"><input type="checkbox" data-render-visible="grid" checked> Grid</label>
+          <label class="checkline"><input type="checkbox" data-render-visible="pairs" checked> Base pairs</label>
+          <label class="checkline"><input type="checkbox" data-render-visible="slides" checked> Slides</label>
+          <label class="checkline"><input type="checkbox" data-render-visible="sticky" checked> Sticky ends</label>
+          <label class="checkline"><input type="checkbox" data-render-visible="bbox"> Bounding box</label>
+          <label class="checkline"><input type="checkbox" data-render-visible="primeMarkers" checked> 5'/3' markers</label>
+          <label class="checkline"><input type="checkbox" data-render-visible="orientation"> Base directions</label>
+          <label class="checkline"><input type="checkbox" data-render-visible="constraints"> Constraints</label>
+          <label class="checkline"><input type="checkbox" data-render-visible="constraintGuard"> Constrain transforms</label>
+        </details>
+
+        <details class="panel toolCard" data-context="selection-tools">
           <summary><h2>Manipulate</h2></summary>
           <div class="buttonrow">
             <button data-action="pairSelected">Pair</button>
@@ -183,7 +211,7 @@ export function mountApp(root) {
           </div>
         </details>
 
-        <details class="panel toolCard" data-context="selected" open>
+        <details class="panel toolCard" data-context="selected">
           <summary><h2>Transform</h2></summary>
           <div class="segmented" aria-label="Transform gizmo">
             <button data-transform-tool="translate">Move Gizmo</button>
@@ -231,8 +259,8 @@ export function mountApp(root) {
           </div>
         </section>
 
-        <section class="panel">
-          <h2>Color</h2>
+        <details class="panel" data-context="selected">
+          <summary><h2>Color</h2></summary>
           <div class="swatches">
             ${STRAND_COLORS.map((color, index) => `<button class="swatch ${index === 0 ? 'selected' : ''}" data-color="${color}" title="Tiamat strand ${index + 1}" style="--swatch:${color}"></button>`).join('')}
           </div>
@@ -241,26 +269,24 @@ export function mountApp(root) {
             <button data-action="colorSelected">Color Selected</button>
             <button data-action="resetColor">Reset Color</button>
           </div>
-        </section>
+        </details>
 
-        <section class="panel">
-          <h2>Edit</h2>
+        <details class="panel" data-context="selected">
+          <summary><h2>Edit</h2></summary>
           <div class="buttonrow">
             <button data-action="copy">Copy</button>
             <button data-action="paste">Paste</button>
             <button data-action="deleteSelected">Delete</button>
           </div>
-        </section>
+        </details>
 
         <details class="panel">
           <summary><h2>Files</h2></summary>
           <div class="buttonrow">
             <label class="buttonLike" for="fileInput">Import</label>
+            <label class="buttonLike" for="appendFileInput">Add</label>
             <button data-action="saveProject">Save</button>
-            <button data-action="exportJson">DNAJSON</button>
-            <button data-action="exportSeq">Seq TXT</button>
-            <button data-action="exportPdb">PDB</button>
-            <button data-action="exportOx">oxDNA</button>
+            <button data-action="exportOxView">oxView</button>
             <button data-action="exportPng">PNG</button>
           </div>
         </details>
@@ -400,6 +426,7 @@ export class TiamatUI {
       button.addEventListener('click', () => this.action(button.dataset.action));
     });
     document.querySelector('#fileInput').addEventListener('change', (event) => this.importFile(event));
+    document.querySelector('#appendFileInput').addEventListener('change', (event) => this.importFile(event, { append: true }));
     window.addEventListener('keydown', (event) => this.handleKeyDown(event));
     this.scene.addEventListener('select-base', (event) => this.handleSceneSelection(event.detail));
     this.scene.addEventListener('focus-base', (event) => this.model.select(event.detail.id));
@@ -491,6 +518,7 @@ export class TiamatUI {
     if (action === 'colorStrand') this.colorActiveStrand();
     if (action === 'colorSelected') this.model.colorSelected(this.activeColor);
     if (action === 'resetColor') this.model.resetSelectedColor();
+    if (action === 'designSequence') this.designSequence();
     if (action === 'createAcross') this.status(this.model.createConnection('across') ? 'Created valid across connection' : 'Across requires two unpaired compatible bases at pairing distance');
     if (action === 'createDown') this.status(this.model.createConnection('down') ? 'Created valid down connection' : 'Down requires two free ends at Tiamat down distance');
     if (action === 'createSlide') this.status(this.model.createConnection('slide') ? 'Created slide connection' : 'Select exactly two bases');
@@ -515,10 +543,7 @@ export class TiamatUI {
     if (action === 'viewSide') this.setView('side');
     if (action === 'clearDesign') this.clearDesign();
     if (action === 'saveProject') download(this.model.fileName, fullProjectJson(this.model, this.scene.viewState()), 'application/json');
-    if (action === 'exportJson') download('tiamat-export.dnajson', dnaJson(this.model), 'application/json');
-    if (action === 'exportSeq') download('tiamat-sequences.txt', sequenceText(this.model), 'text/plain');
-    if (action === 'exportPdb') download('tiamat.pdb', pdbText(this.model), 'chemical/x-pdb');
-    if (action === 'exportOx') download('tiamat-oxdna.txt', oxDnaText(this.model), 'text/plain');
+    if (action === 'exportOxView') download('tiamat-export.oxview', oxViewJson(this.model), 'application/json');
     if (action === 'exportPng') download('tiamat-render.png', dataUrlToBlob(this.scene.exportPng()), 'image/png');
     this.scene.setInteractionMode(this.mode, this.snap());
     this.updateInteractionHint();
@@ -642,6 +667,33 @@ export class TiamatUI {
     ));
   }
 
+  readSequenceDesignOptions() {
+    return {
+      sequenceLimit: document.querySelector('#seqLimitInput')?.value,
+      repeatLimit: document.querySelector('#repeatLimitInput')?.value,
+      gRepeatLimit: document.querySelector('#gRepeatLimitInput')?.value,
+      gcTarget: document.querySelector('#gcTargetInput')?.value,
+      timeout: document.querySelector('#seqTimeoutInput')?.value,
+      scope: document.querySelector('#seqScopeInput')?.value,
+      preserveExisting: document.querySelector('#seqPreserveInput')?.checked,
+      useSequenceLimit: document.querySelector('#seqUniqueInput')?.checked,
+      useRepeatLimit: document.querySelector('#seqRepeatInput')?.checked,
+      useGRepeatLimit: document.querySelector('#seqGRepeatInput')?.checked,
+      useGC: document.querySelector('#seqGCInput')?.checked,
+      useSliders: document.querySelector('#seqSlidersInput')?.checked,
+      genome: document.querySelector('#seqGenomeInput')?.value ?? ''
+    };
+  }
+
+  designSequence() {
+    const result = this.model.designSequence(this.readSequenceDesignOptions());
+    if (!result.editable) {
+      this.status('No editable generic bases for sequence design');
+      return;
+    }
+    this.status(`Designed ${result.changed}/${result.editable} bases${result.issues ? ` · ${result.issues} checks remaining` : ''}`);
+  }
+
   createStrandFromGesture({ start, end }) {
     const count = this.model.createStrandBetween(start, end, document.querySelector('#sequenceInput').value, this.readCreateOptions());
     this.status(count ? `Created ${count} base strand` : 'Create strand needs a nonzero drag span');
@@ -689,6 +741,7 @@ export class TiamatUI {
 
   updateCreateState() {
     const target = document.querySelector('#createState');
+    this.scene.setFreeformPreview(this.freeformControls);
     if (!target) return;
     const attachments = [
       this.freeformStartId !== null ? `start #${this.freeformStartId}` : null,
@@ -728,69 +781,117 @@ export class TiamatUI {
     this.status('Cleared');
   }
 
-  async importFile(event) {
+  async importFile(event, { append = false } = {}) {
     const files = [...event.target.files];
     if (!files.length) return;
-    // Multi-file: detect .top + .oxdna (+ optional .dna for metadata)
-    const topFile = files.find((f) => f.name.toLowerCase().endsWith('.top'));
-    const oxdnaFile = files.find((f) => f.name.toLowerCase().endsWith('.oxdna'));
-    const dnaFile = files.find((f) => f.name.toLowerCase().endsWith('.dna'));
-    if (topFile && oxdnaFile) {
-      this.importDiagnostics = null;
-      try {
-        const [topText, confText] = await Promise.all([topFile.text(), oxdnaFile.text()]);
-        const data = parseOxDnaTopConf(topText, confText);
-        // If a .dna file is also selected, merge its across-links, types & colors
-        if (dnaFile) {
-          const buffer = await dnaFile.arrayBuffer();
-          const dnaData = parseDnaFile(buffer);
-          mergeMetadataFromDna(data.bases, dnaData.bases);
-          data.diagnostics.mergedDna = dnaData.diagnostics;
-        }
-        this.importDiagnostics = data.diagnostics ?? null;
-        this.model.loadBases(data.bases);
-        if (data.bases.length > 5000) this.scene.setLargeStructureMode();
-      } catch (e) {
-        this.status(`Failed to parse: ${e.message}`);
-        return;
-      }
-      this.scene.frameDesign();
-      const names = [topFile.name, oxdnaFile.name, dnaFile?.name].filter(Boolean).join(' + ');
-      this.status(`Loaded ${names} (${this.model.bases.length} bases)`);
-      this.persistRenderSettings();
-      return;
-    }
+    this.importDiagnostics = null;
+    const standaloneOnly = files.length === 1;
     const file = files[0];
     const ext = file.name.split('.').pop().toLowerCase();
-    this.importDiagnostics = null;
+
+    if (standaloneOnly && (ext === 'pdb' || ext === 'txt')) {
+      const text = await file.text();
+      if (ext === 'pdb') parsePdb(text, this.model);
+      else parseSequenceText(text, this.readCreateOptions(), this.model);
+      this.scene.frameDesign();
+      this.status(`Loaded ${file.name} (${this.model.bases.length} bases)`);
+      this.persistRenderSettings();
+      event.target.value = '';
+      return;
+    }
+
+    try {
+      const designs = await this.parseImportDesigns(files);
+      if (!designs.length) {
+        this.status('No supported design files selected');
+        return;
+      }
+      const data = append && this.model.bases.length
+        ? appendImportedDesigns(this.model.bases, designs)
+        : mergeImportedDesigns(designs);
+      this.importDiagnostics = data.diagnostics ?? null;
+      this.model.loadBases(data.bases);
+      if (!append && data.view) this.scene.restoreView(data.view);
+      if (data.bases.length > 5000) this.scene.setLargeStructureMode();
+      this.scene.frameDesign();
+      const names = designs.map((design) => design.name).join(' + ');
+      this.status(`${append ? 'Added' : 'Loaded'} ${names} (${this.model.bases.length} bases)`);
+      this.persistRenderSettings();
+    } catch (e) {
+      this.status(`Failed to parse: ${e.message}`);
+    } finally {
+      event.target.value = '';
+    }
+  }
+
+  async parseImportDesigns(files) {
+    const unused = new Set(files);
+    const designs = [];
+    const topFiles = files.filter((f) => f.name.toLowerCase().endsWith('.top'));
+    const oxdnaFiles = files.filter((f) => f.name.toLowerCase().endsWith('.oxdna'));
+
+    for (const topFile of topFiles) {
+      const topStem = fileStem(topFile.name);
+      const oxdnaFile = oxdnaFiles.find((candidate) => unused.has(candidate) && fileStem(candidate.name) === topStem) ??
+        (oxdnaFiles.length === 1 ? oxdnaFiles[0] : null);
+      if (!oxdnaFile || !unused.has(topFile) || !unused.has(oxdnaFile)) continue;
+      const dnaFiles = files.filter((candidate) => unused.has(candidate) && candidate.name.toLowerCase().endsWith('.dna'));
+      const dnaFile = dnaFiles.find((candidate) =>
+        unused.has(candidate) &&
+        candidate.name.toLowerCase().endsWith('.dna') &&
+        fileStem(candidate.name) === topStem
+      ) ?? (topFiles.length === 1 && oxdnaFiles.length === 1 && dnaFiles.length === 1 ? dnaFiles[0] : null);
+      designs.push(await this.parseOxDnaDesign(topFile, oxdnaFile, dnaFile));
+      unused.delete(topFile);
+      unused.delete(oxdnaFile);
+      if (dnaFile) unused.delete(dnaFile);
+    }
+
+    for (const item of files) {
+      if (!unused.has(item)) continue;
+      const ext = item.name.split('.').pop().toLowerCase();
+      if (ext === 'top' || ext === 'oxdna') {
+        throw new Error(`${item.name} needs a matching .${ext === 'top' ? 'oxdna' : 'top'} file`);
+      }
+      if (ext === 'pdb' || ext === 'txt') {
+        throw new Error(`${item.name} can be imported by itself, but not merged with other selected designs yet`);
+      }
+      designs.push(await this.parseStandaloneDesign(item));
+      unused.delete(item);
+    }
+    return designs;
+  }
+
+  async parseOxDnaDesign(topFile, oxdnaFile, dnaFile = null) {
+    const [topText, confText] = await Promise.all([topFile.text(), oxdnaFile.text()]);
+    const data = parseOxDnaTopConf(topText, confText);
+    if (dnaFile) {
+      const buffer = await dnaFile.arrayBuffer();
+      const dnaData = parseDnaFile(buffer);
+      mergeMetadataFromDna(data.bases, dnaData.bases);
+      data.diagnostics.mergedDna = dnaData.diagnostics;
+    }
+    return {
+      name: [topFile.name, oxdnaFile.name, dnaFile?.name].filter(Boolean).join(' + '),
+      ...data
+    };
+  }
+
+  async parseStandaloneDesign(file) {
+    const ext = file.name.split('.').pop().toLowerCase();
     if (ext === 'dna') {
       try {
         const buffer = await file.arrayBuffer();
         const data = parseDnaFile(buffer);
-        this.importDiagnostics = data.diagnostics ?? null;
-        this.model.loadBases(data.bases);
-        this.scene.restoreView(data.view);
-        if (data.bases.length > 5000) this.scene.setLargeStructureMode();
+        return { name: file.name, ...data };
       } catch (e) {
-        this.status(`Failed to parse .dna: ${e.message}`);
-        return;
-      }
-    } else {
-      const text = await file.text();
-      if (ext === 'pdb') parsePdb(text, this.model);
-      else if (ext === 'txt') parseSequenceText(text, this.readCreateOptions(), this.model);
-      else {
-        const parser = ext === 'oxview' ? parseOxViewProject : parseJsonProject;
-        const data = parser(text);
-        this.importDiagnostics = data.diagnostics ?? null;
-        this.model.loadBases(data.bases);
-        this.scene.restoreView(data.view);
-        if (ext === 'oxview' && data.bases.length > 5000) this.scene.setLargeStructureMode();
+        throw new Error(`${file.name}: ${e.message}`);
       }
     }
-    this.scene.frameDesign();
-    this.status(`Loaded ${file.name} (${this.model.bases.length} bases)`);
-    this.persistRenderSettings();
+    const text = await file.text();
+    const parser = ext === 'oxview' ? parseOxViewProject : parseJsonProject;
+    const data = parser(text);
+    return { name: file.name, ...data };
   }
 
   applyGeometryPreset(geometry, syncCreateMode = true) {
@@ -843,9 +944,11 @@ export class TiamatUI {
     const selectedCount = this.model.selectedIds.size;
     document.querySelectorAll('[data-context="selected"]').forEach((panel) => {
       panel.hidden = selectedCount === 0;
+      if (panel instanceof HTMLDetailsElement) panel.open = selectedCount > 0;
     });
     document.querySelectorAll('[data-context="selection-tools"]').forEach((panel) => {
       panel.hidden = selectedCount === 0;
+      if (panel instanceof HTMLDetailsElement) panel.open = selectedCount > 0;
     });
   }
 
@@ -866,6 +969,10 @@ export class TiamatUI {
     if (d.format === 'cadnano v2') {
       lines.push(`<span>${d.helices} helices · ${d.grid} grid · ${d.numBases} offsets</span>`);
       lines.push(`<span>${d.skippedOffsets} deletions · ${d.insertionCount} insertion bases</span>`);
+    } else if (d.format === 'Multiple designs') {
+      lines.push(`<span>${d.designCount} designs arranged side by side</span>`);
+      lines.push(...(d.designs ?? []).slice(0, 4).map((design) => `<span>${design.name}: ${design.bases} bases</span>`));
+      if ((d.designs ?? []).length > 4) lines.push(`<span>+${d.designs.length - 4} more designs</span>`);
     } else if (d.format?.startsWith('Tiamat .dna')) {
       lines.push(`<span>schema ${d.schema} · ${d.recovery}${d.partial ? ' · partial recovery' : ''}</span>`);
       if (d.partial && d.recoveredBases) {
@@ -1019,6 +1126,10 @@ function visibilityLabel(option) {
     constraints: 'Constraints',
     constraintGuard: 'Constrain transforms'
   }[option] ?? option;
+}
+
+function fileStem(name) {
+  return name.replace(/\.[^.]+$/, '').toLowerCase();
 }
 
 function dataUrlToBlob(dataUrl) {

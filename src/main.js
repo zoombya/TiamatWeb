@@ -10,6 +10,3 @@ const scene = new TiamatScene(document.querySelector('#viewport'), model);
 const ui = new TiamatUI(model, scene);
 
 window.tiamat = { model, scene, ui };
-
-model.createHelix('ATGCGTACGCTA', ui.readCreateOptions());
-scene.frameDesign();

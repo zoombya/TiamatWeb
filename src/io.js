@@ -4,6 +4,12 @@ import { arrayToPosition, normalizeImportedType } from './legacy-normalize.js';
 import { cleanSequence, normalizeBase, vectorFrom } from './geometry.js';
 export { parseDnaFile } from './dna-loader.js';
 
+const OXVIEW_NM_PER_UNIT = 0.8518;
+const OXDNA_BASE_BASE = 0.3897628551303122;
+const OXDNA_CM_CENTER_DS = 0.6;
+const OXDNA_COMPLEMENT_CM_SEPARATION = 1.2;
+const OXDNA_HELICAL_TWIST_RAD = THREE.MathUtils.degToRad(35.9);
+
 /**
  * Merge metadata from a corrupted .dna parse into oxDNA-sourced bases.
  * Matches bases by strand order: walks strands in both datasets and
@@ -97,8 +103,8 @@ export function parseOxDnaTopConf(topText, confText) {
       molecule: tParts[1] === 'U' ? 'RNA' : 'DNA',
       geometry: 'B',
       position: { x: Number(cParts[0]) || 0, y: Number(cParts[1]) || 0, z: Number(cParts[2]) || 0 },
-      up: n3 >= 0 && n3 < nBases ? n3 : null,
-      down: n5 >= 0 && n5 < nBases ? n5 : null,
+      up: n5 >= 0 && n5 < nBases ? n5 : null,
+      down: n3 >= 0 && n3 < nBases ? n3 : null,
       across: null,
       slide: [],
       sticky: null,
@@ -110,7 +116,11 @@ export function parseOxDnaTopConf(topText, confText) {
       temp: false,
       useStrandColor: false,
       strandColor: null,
-      constraints: {}
+      constraints: {},
+      oxView: {
+        a1: normalizeArrayVector(cParts.slice(3, 6)),
+        a3: normalizeArrayVector(cParts.slice(6, 9))
+      }
     });
   }
   // Scale to Tiamat nm: compute median down-distance and scale to 0.677
@@ -127,6 +137,12 @@ export function parseOxDnaTopConf(topText, confText) {
     b.position.x = (b.position.x - center.x) * scale;
     b.position.y = (b.position.y - center.y) * scale;
     b.position.z = (b.position.z - center.z) * scale;
+    b.oxView = {
+      ...(b.oxView ?? {}),
+      importScale: scale,
+      importCenter: [center.x, center.y, center.z],
+      medianDownDistance: medianDist
+    };
   });
   return {
     view: null,
@@ -192,15 +208,209 @@ export function pdbText(model) {
   return lines.join('\n');
 }
 
+export function oxViewJson(model) {
+  const strands = model.strands();
+  const bases = strands.flat();
+  const idToOxId = new Map(bases.map((base, index) => [base.id, index]));
+  const byId = new Map(model.bases.map((base) => [base.id, base]));
+  const frames = buildOxViewFrames(strands, byId);
+  const box = oxViewBox([...frames.values()].map((frame) => frame.p));
+  const oxStrands = strands.map((strand, strandIndex) => {
+    const monomers = strand.map((base) => oxViewMonomer(base, byId, idToOxId, model, frames.get(base.id)));
+    return {
+      id: strandIndex,
+      end3: idToOxId.get(strand.at(-1)?.id) ?? monomers.at(-1)?.id ?? -1,
+      end5: idToOxId.get(strand[0]?.id) ?? monomers[0]?.id ?? -1,
+      class: 'NucleicAcidStrand',
+      monomers
+    };
+  });
+
+  return JSON.stringify({
+    date: new Date().toISOString(),
+    box,
+    systems: [{
+      id: 0,
+      strands: oxStrands
+    }]
+  }, null, 2);
+}
+
+function oxViewMonomer(base, byId, idToOxId, model, frame = oxViewFrame(base, byId)) {
+  const monomer = {
+    id: idToOxId.get(base.id),
+    type: base.type === 'X' ? 'A' : base.type,
+    class: base.molecule === 'RNA' ? 'RNA' : 'DNA',
+    p: roundVector(frame.p),
+    a1: roundVector(frame.a1),
+    a3: roundVector(frame.a3)
+  };
+  const n5 = idToOxId.get(base.up);
+  const n3 = idToOxId.get(base.down);
+  const bp = idToOxId.get(base.across);
+  if (n5 !== undefined) monomer.n5 = n5;
+  if (n3 !== undefined) monomer.n3 = n3;
+  if (bp !== undefined) monomer.bp = bp;
+  const color = colorToDecimal(model.displayColor(base));
+  if (color !== null) monomer.color = color;
+  return monomer;
+}
+
+function oxViewFrame(base, byId) {
+  const a3 = oxViewA3Vector(base, byId);
+  const a1 = oxViewA1Vector(base, byId, a3);
+  const p = oxViewScenePosition(base);
+  return { p, a1, a3 };
+}
+
+function buildOxViewFrames(strands, byId) {
+  const frames = new Map();
+  const strandGap = 3.2;
+  let layoutIndex = 0;
+
+  strands.forEach((strand) => {
+    strand.forEach((base) => {
+      if (hasImportedOxFrame(base)) frames.set(base.id, oxViewFrame(base, byId));
+    });
+  });
+
+  strands.forEach((strand) => {
+    if (!strand.length || strand.every((base) => frames.has(base.id))) return;
+    const origin = new THREE.Vector3(layoutIndex * strandGap, 0, 0);
+    layoutIndex += 1;
+    generateCanonicalOxStrandFrames(strand, origin, frames, byId);
+  });
+
+  strands.forEach((strand) => {
+    if (!strand.length || strand.every((base) => frames.has(base.id))) return;
+    const origin = new THREE.Vector3(layoutIndex * strandGap, 0, 0);
+    layoutIndex += 1;
+    generateCanonicalOxStrandFrames(strand, origin, frames, byId);
+  });
+
+  return frames;
+}
+
+function hasImportedOxFrame(base) {
+  return base?.oxView && Array.isArray(base.oxView.a1) && Array.isArray(base.oxView.a3);
+}
+
+function generateCanonicalOxStrandFrames(strand, origin, frames, byId) {
+  const axis = new THREE.Vector3(0, 0, 1);
+  const firstA1 = new THREE.Vector3(1, 0, 0);
+  const rotation = new THREE.Quaternion();
+
+  strand.forEach((base, index) => {
+    if (frames.has(base.id)) return;
+    rotation.setFromAxisAngle(axis, index * OXDNA_HELICAL_TWIST_RAD);
+    const a1 = firstA1.clone().applyQuaternion(rotation).normalize();
+    const a3 = axis.clone();
+    const rb = origin.clone().addScaledVector(axis, index * OXDNA_BASE_BASE);
+    const p = rb.sub(a1.clone().multiplyScalar(OXDNA_CM_CENTER_DS));
+    frames.set(base.id, { p, a1, a3 });
+
+    const pair = byId.get(base.across);
+    if (pair && !frames.has(pair.id) && !hasImportedOxFrame(pair)) {
+      frames.set(pair.id, complementOxFrame(frames.get(base.id)));
+    }
+  });
+}
+
+function complementOxFrame(frame) {
+  const a1 = frame.a1.clone().multiplyScalar(-1);
+  const a3 = frame.a3.clone().multiplyScalar(-1);
+  const p = frame.p.clone().sub(a1.clone().multiplyScalar(OXDNA_COMPLEMENT_CM_SEPARATION));
+  return { p, a1, a3 };
+}
+
+function oxViewScenePosition(base) {
+  const position = vectorFrom(base.position);
+  const importedScale = Number(base.oxView?.importScale);
+  if (Number.isFinite(importedScale) && importedScale > 0) {
+    const source = position.divideScalar(importedScale);
+    const center = vectorFrom(base.oxView?.importCenter);
+    return source.add(center);
+  }
+  return position.divideScalar(OXVIEW_NM_PER_UNIT);
+}
+
+function oxViewA3Vector(base, byId) {
+  const imported = vectorFrom(base.oxView?.a3);
+  if (imported.lengthSq() > 0.000001) return imported.normalize();
+  const up = byId.get(base.up);
+  const down = byId.get(base.down);
+  const here = vectorFrom(base.position);
+  let direction = null;
+  if (up && down) direction = vectorFrom(down.position).sub(vectorFrom(up.position));
+  else if (down) direction = vectorFrom(down.position).sub(here);
+  else if (up) direction = here.clone().sub(vectorFrom(up.position));
+  const vector = direction && direction.lengthSq() > 0.000001
+    ? direction.normalize()
+    : new THREE.Vector3(0, 0, 1);
+  return vector;
+}
+
+function oxViewA1Vector(base, byId, a3) {
+  const here = vectorFrom(base.position);
+  const across = byId.get(base.across);
+  let vector = vectorFrom(base.oxView?.a1);
+  if (vector.lengthSq() <= 0.000001 && across) vector = vectorFrom(across.position).sub(here);
+  const axis = a3.clone().normalize();
+  if (vector.lengthSq() > 0.000001) vector.sub(axis.clone().multiplyScalar(vector.dot(axis)));
+  if (!vector || vector.lengthSq() <= 0.000001) {
+    vector = Math.abs(axis.dot(new THREE.Vector3(1, 0, 0))) < 0.9
+      ? new THREE.Vector3(1, 0, 0)
+      : new THREE.Vector3(0, 1, 0);
+    vector.sub(axis.clone().multiplyScalar(vector.dot(axis)));
+  }
+  vector.normalize();
+  return vector;
+}
+
+function oxViewBox(points) {
+  if (!points.length) return [10, 10, 10];
+  const box = new THREE.Box3().setFromPoints(points);
+  const size = box.getSize(new THREE.Vector3());
+  return [
+    round6(Math.max(10, size.x + 10)),
+    round6(Math.max(10, size.y + 10)),
+    round6(Math.max(10, size.z + 10))
+  ];
+}
+
+function colorToDecimal(color) {
+  const match = String(color ?? '').match(/^#?([0-9a-f]{6})$/i);
+  return match ? Number.parseInt(match[1], 16) : null;
+}
+
+function round6(value) {
+  return Number(Number(value).toFixed(6));
+}
+
+function roundVector(vector) {
+  return [round6(vector.x), round6(vector.y), round6(vector.z)];
+}
+
+function normalizeArrayVector(values) {
+  const vector = new THREE.Vector3(
+    Number(values?.[0]) || 0,
+    Number(values?.[1]) || 0,
+    Number(values?.[2]) || 0
+  );
+  return vector.lengthSq() > 0.000001 ? vector.normalize().toArray() : null;
+}
+
 export function oxDnaText(model) {
   const bases = [...model.bases].sort((a, b) => a.id - b.id);
   const idToIndex = new Map(bases.map((base, index) => [base.id, index]));
+  const byId = new Map(model.bases.map((base) => [base.id, base]));
+  const frames = buildOxViewFrames(model.strands(), byId);
   const topology = [`${bases.length} ${model.strands().length}`];
   const config = ['t = 0', 'b = 40 40 40', 'E = 0 0 0'];
   bases.forEach((base) => {
-    topology.push(`${base.strand} ${base.type} ${base.up === null ? -1 : idToIndex.get(base.up)} ${base.down === null ? -1 : idToIndex.get(base.down)}`);
-    const p = vectorFrom(base.position);
-    config.push(`${p.x.toFixed(6)} ${p.y.toFixed(6)} ${p.z.toFixed(6)} 1 0 0 0 1 0 0 0 0 0 0 0`);
+    topology.push(`${base.strand} ${base.type} ${base.down === null ? -1 : idToIndex.get(base.down)} ${base.up === null ? -1 : idToIndex.get(base.up)}`);
+    const frame = frames.get(base.id) ?? oxViewFrame(base, byId);
+    config.push(`${roundVector(frame.p).join(' ')} ${roundVector(frame.a1).join(' ')} ${roundVector(frame.a3).join(' ')} 0 0 0 0 0 0`);
   });
   return `# topology\n${topology.join('\n')}\n\n# configuration\n${config.join('\n')}\n`;
 }
@@ -242,6 +452,242 @@ export function parseCadnanoV2Project(text) {
 
 export function parseOxViewProject(text) {
   return parseOxViewProjectData(JSON.parse(text));
+}
+
+export function mergeImportedDesigns(designs, { gap = 12 } = {}) {
+  const activeDesigns = designs.filter((design) => Array.isArray(design.bases) && design.bases.length > 0);
+  if (activeDesigns.length === 0) {
+    return {
+      view: null,
+      bases: [],
+      diagnostics: {
+        format: 'Multiple designs',
+        importedBases: 0,
+        designCount: 0,
+        strands: 0,
+        pairs: 0
+      }
+    };
+  }
+
+  const shouldArrange = activeDesigns.length > 1;
+  const mergedBases = [];
+  const designSummaries = [];
+  let nextId = 0;
+  let cursorX = 0;
+
+  activeDesigns.forEach((design, designIndex) => {
+    const bounds = baseBounds(design.bases);
+    const width = Math.max(bounds.max.x - bounds.min.x, 1);
+    const center = {
+      x: (bounds.min.x + bounds.max.x) / 2,
+      y: (bounds.min.y + bounds.max.y) / 2,
+      z: (bounds.min.z + bounds.max.z) / 2
+    };
+    const targetCenterX = shouldArrange ? cursorX + width / 2 : center.x;
+    const translation = {
+      x: targetCenterX - center.x,
+      y: shouldArrange ? -center.y : 0,
+      z: shouldArrange ? -center.z : 0
+    };
+
+    const idMap = new Map();
+    design.bases.forEach((base) => {
+      idMap.set(base.id, nextId++);
+    });
+
+    design.bases.forEach((base) => {
+      const position = vectorFrom(base.position);
+      mergedBases.push({
+        ...structuredClone(base),
+        id: idMap.get(base.id),
+        position: {
+          x: position.x + translation.x,
+          y: position.y + translation.y,
+          z: position.z + translation.z
+        },
+        up: idMap.get(base.up) ?? null,
+        down: idMap.get(base.down) ?? null,
+        across: idMap.get(base.across) ?? null,
+        slide: (base.slide ?? []).map((id) => idMap.get(id)).filter(Number.isFinite),
+        sticky: idMap.get(base.sticky) ?? null,
+        sourceDesign: design.name ?? `design ${designIndex + 1}`
+      });
+    });
+
+    designSummaries.push({
+      name: design.name ?? `design ${designIndex + 1}`,
+      bases: design.bases.length,
+      format: design.diagnostics?.format ?? 'unknown'
+    });
+    cursorX += width + gap;
+  });
+
+  return {
+    view: activeDesigns.length === 1 ? activeDesigns[0].view ?? null : null,
+    bases: mergedBases,
+    diagnostics: {
+      format: activeDesigns.length === 1
+        ? activeDesigns[0].diagnostics?.format ?? 'Imported design'
+        : 'Multiple designs',
+      importedBases: mergedBases.length,
+      designCount: activeDesigns.length,
+      designs: designSummaries,
+      strands: countStrands(mergedBases),
+      pairs: countPairs(mergedBases),
+      sourceDiagnostics: activeDesigns.map((design) => design.diagnostics).filter(Boolean)
+    }
+  };
+}
+
+export function appendImportedDesigns(currentBases, designs, { gap = 12 } = {}) {
+  const incoming = designs.filter((design) => Array.isArray(design.bases) && design.bases.length > 0);
+  if (!Array.isArray(currentBases) || currentBases.length === 0) return mergeImportedDesigns(incoming, { gap });
+  if (incoming.length === 0) {
+    return {
+      view: null,
+      bases: currentBases.map((base) => structuredClone(base)),
+      diagnostics: {
+        format: 'Multiple designs',
+        importedBases: currentBases.length,
+        designCount: 1,
+        appendedDesignCount: 0,
+        strands: countStrands(currentBases),
+        pairs: countPairs(currentBases)
+      }
+    };
+  }
+
+  const mergedBases = currentBases.map((base) => structuredClone(base));
+  const currentBounds = baseBounds(mergedBases);
+  const currentCenter = {
+    y: (currentBounds.min.y + currentBounds.max.y) / 2,
+    z: (currentBounds.min.z + currentBounds.max.z) / 2
+  };
+  let cursorX = currentBounds.max.x + gap;
+  let nextId = mergedBases.reduce((max, base) => Math.max(max, Number(base.id) || 0), -1) + 1;
+  const designSummaries = [];
+
+  incoming.forEach((design, designIndex) => {
+    const bounds = baseBounds(design.bases);
+    const width = Math.max(bounds.max.x - bounds.min.x, 1);
+    const center = {
+      x: (bounds.min.x + bounds.max.x) / 2,
+      y: (bounds.min.y + bounds.max.y) / 2,
+      z: (bounds.min.z + bounds.max.z) / 2
+    };
+    const translation = {
+      x: cursorX + width / 2 - center.x,
+      y: currentCenter.y - center.y,
+      z: currentCenter.z - center.z
+    };
+
+    const idMap = new Map();
+    design.bases.forEach((base) => {
+      idMap.set(base.id, nextId++);
+    });
+    design.bases.forEach((base) => {
+      const position = vectorFrom(base.position);
+      mergedBases.push({
+        ...structuredClone(base),
+        id: idMap.get(base.id),
+        position: {
+          x: position.x + translation.x,
+          y: position.y + translation.y,
+          z: position.z + translation.z
+        },
+        up: idMap.get(base.up) ?? null,
+        down: idMap.get(base.down) ?? null,
+        across: idMap.get(base.across) ?? null,
+        slide: (base.slide ?? []).map((id) => idMap.get(id)).filter(Number.isFinite),
+        sticky: idMap.get(base.sticky) ?? null,
+        sourceDesign: design.name ?? `added design ${designIndex + 1}`
+      });
+    });
+
+    designSummaries.push({
+      name: design.name ?? `added design ${designIndex + 1}`,
+      bases: design.bases.length,
+      format: design.diagnostics?.format ?? 'unknown'
+    });
+    cursorX += width + gap;
+  });
+
+  return {
+    view: null,
+    bases: mergedBases,
+    diagnostics: {
+      format: 'Multiple designs',
+      importedBases: mergedBases.length,
+      designCount: incoming.length + 1,
+      appendedDesignCount: incoming.length,
+      appendedBases: incoming.reduce((sum, design) => sum + design.bases.length, 0),
+      designs: designSummaries,
+      strands: countStrands(mergedBases),
+      pairs: countPairs(mergedBases),
+      sourceDiagnostics: incoming.map((design) => design.diagnostics).filter(Boolean)
+    }
+  };
+}
+
+function baseBounds(bases) {
+  const bounds = {
+    min: { x: Infinity, y: Infinity, z: Infinity },
+    max: { x: -Infinity, y: -Infinity, z: -Infinity }
+  };
+  bases.forEach((base) => {
+    const p = vectorFrom(base.position);
+    bounds.min.x = Math.min(bounds.min.x, p.x);
+    bounds.min.y = Math.min(bounds.min.y, p.y);
+    bounds.min.z = Math.min(bounds.min.z, p.z);
+    bounds.max.x = Math.max(bounds.max.x, p.x);
+    bounds.max.y = Math.max(bounds.max.y, p.y);
+    bounds.max.z = Math.max(bounds.max.z, p.z);
+  });
+  ['x', 'y', 'z'].forEach((axis) => {
+    if (!Number.isFinite(bounds.min[axis])) bounds.min[axis] = 0;
+    if (!Number.isFinite(bounds.max[axis])) bounds.max[axis] = 0;
+  });
+  return bounds;
+}
+
+function countPairs(bases) {
+  const byId = new Map(bases.map((base) => [base.id, base]));
+  const seen = new Set();
+  let pairs = 0;
+  bases.forEach((base) => {
+    if (base.across === null || !byId.has(base.across)) return;
+    const a = Math.min(base.id, base.across);
+    const b = Math.max(base.id, base.across);
+    const key = `${a}:${b}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    pairs += 1;
+  });
+  return pairs;
+}
+
+function countStrands(bases) {
+  const byId = new Map(bases.map((base) => [base.id, base]));
+  const visited = new Set();
+  let strands = 0;
+  const walk = (base) => {
+    let current = base;
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id);
+      current = current.down === null ? null : byId.get(current.down);
+    }
+  };
+  bases.filter((base) => base.up === null).forEach((base) => {
+    strands += 1;
+    walk(base);
+  });
+  bases.forEach((base) => {
+    if (visited.has(base.id)) return;
+    strands += 1;
+    walk(base);
+  });
+  return strands;
 }
 
 function parseOxViewProjectData(data) {
@@ -307,8 +753,8 @@ function parseOxViewProjectData(data) {
       (strand.monomers ?? []).forEach((monomer) => {
         const base = byId.get(resolveOxViewId(systemId, monomer.id, localIdToBaseId, fallbackIdToBaseIds));
         if (!base) return;
-        base.up = resolveOxViewId(systemId, monomer.n3, localIdToBaseId, fallbackIdToBaseIds);
-        base.down = resolveOxViewId(systemId, monomer.n5, localIdToBaseId, fallbackIdToBaseIds);
+        base.up = resolveOxViewId(systemId, monomer.n5, localIdToBaseId, fallbackIdToBaseIds);
+        base.down = resolveOxViewId(systemId, monomer.n3, localIdToBaseId, fallbackIdToBaseIds);
         const pairId = monomer.bp ?? monomer.pair;
         if (pairId !== undefined && pairId !== null) pairFieldCount += 1;
         base.across = resolveOxViewId(systemId, pairId, localIdToBaseId, fallbackIdToBaseIds);

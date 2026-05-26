@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { TiamatModel } from '../src/model.js';
 import { DOWN_DISTANCE, TIAMAT_GEOMETRY } from '../src/constants.js';
 import { vectorFrom } from '../src/geometry.js';
-import { fullProjectJson, parseDnaFile, parseJsonProject, parseOxViewProject } from '../src/io.js';
+import { appendImportedDesigns, fullProjectJson, mergeImportedDesigns, oxDnaText, oxViewJson, parseOxDnaTopConf, parseDnaFile, parseJsonProject, parseOxViewProject } from '../src/io.js';
 import { ScreenSelectionIndex } from '../src/selection-index.js';
 import { isSchematicRunNeighbor } from '../src/scene.js';
 
@@ -73,7 +73,7 @@ const TIAMAT_REPLACEMENT_FIXTURES = [
 ];
 const TIAMAT_LEGACY_TEXT_FIXTURES = [
   {
-    path: '/Users/m.matthies/Downloads/ssRNA_6.3k_Science.dna',
+    path: '/Users/m.matthies/Downloads/ssRNA_6.3k_Science_broken.dna',
     bases: 6144
   },
   {
@@ -81,6 +81,13 @@ const TIAMAT_LEGACY_TEXT_FIXTURES = [
     bases: 6144
   }
 ];
+const TIAMAT_CLEAN_SSRNA_FIXTURE = {
+  path: '/Users/m.matthies/Downloads/ssRNA_6.3k_Science.dna',
+  bases: 6320,
+  strands: 1,
+  pairs: 3056
+};
+const TIAMAT_BROKEN_SSRNA_FIXTURE = '/Users/m.matthies/Downloads/ssRNA_6.3k_Science_broken.dna';
 const tests = [];
 
 test('createHelix creates paired duplex with Tiamat graph links', () => {
@@ -110,6 +117,54 @@ test('full project JSON roundtrips graph fields', () => {
   assert.equal(loaded.strands().length, 1);
   assert.equal(loaded.getBase(0).down, 1);
   assert.equal(loaded.getBase(1).up, 0);
+});
+
+test('multiple imported designs remap links and arrange side by side', () => {
+  const first = [
+    { id: 10, type: 'A', molecule: 'DNA', geometry: 'B', position: { x: 0, y: 0, z: 0 }, up: null, down: 20, across: null, slide: [], sticky: null, stickyID: 0, strand: 1, circular: false, top: true, preset: true, temp: false, useStrandColor: false, strandColor: null, constraints: {} },
+    { id: 20, type: 'T', molecule: 'DNA', geometry: 'B', position: { x: 1, y: 0, z: 0 }, up: 10, down: null, across: null, slide: [], sticky: null, stickyID: 0, strand: 1, circular: false, top: false, preset: true, temp: false, useStrandColor: false, strandColor: null, constraints: {} }
+  ];
+  const second = [
+    { id: 0, type: 'G', molecule: 'DNA', geometry: 'B', position: { x: 0, y: 0, z: 0 }, up: null, down: 1, across: 2, slide: [], sticky: null, stickyID: 0, strand: 1, circular: false, top: true, preset: true, temp: false, useStrandColor: false, strandColor: null, constraints: {} },
+    { id: 1, type: 'C', molecule: 'DNA', geometry: 'B', position: { x: 1, y: 0, z: 0 }, up: 0, down: null, across: null, slide: [], sticky: null, stickyID: 0, strand: 1, circular: false, top: false, preset: true, temp: false, useStrandColor: false, strandColor: null, constraints: {} },
+    { id: 2, type: 'C', molecule: 'DNA', geometry: 'B', position: { x: 0, y: 1, z: 0 }, up: null, down: null, across: 0, slide: [], sticky: null, stickyID: 0, strand: 2, circular: false, top: true, preset: true, temp: false, useStrandColor: false, strandColor: null, constraints: {} }
+  ];
+  const data = mergeImportedDesigns([
+    { name: 'first.dna', bases: first, diagnostics: { format: 'Tiamat .dna (MFC object graph)' } },
+    { name: 'second.dna', bases: second, diagnostics: { format: 'Tiamat .dna (MFC object graph)' } }
+  ], { gap: 5 });
+
+  assert.equal(data.diagnostics.format, 'Multiple designs');
+  assert.equal(data.diagnostics.designCount, 2);
+  assert.equal(data.bases.length, 5);
+  assert.deepEqual(data.bases.map((base) => base.id), [0, 1, 2, 3, 4]);
+  assert.equal(data.bases[0].down, 1);
+  assert.equal(data.bases[1].up, 0);
+  assert.equal(data.bases[2].down, 3);
+  assert.equal(data.bases[2].across, 4);
+  assert.equal(data.bases[4].across, 2);
+  assert.ok(Math.min(...data.bases.slice(2).map((base) => base.position.x)) > Math.max(...data.bases.slice(0, 2).map((base) => base.position.x)));
+});
+
+test('appending imported designs preserves current coordinates and remaps added links', () => {
+  const current = [
+    { id: 5, type: 'A', molecule: 'DNA', geometry: 'B', position: { x: -2, y: 3, z: 1 }, up: null, down: null, across: null, slide: [], sticky: null, stickyID: 0, strand: 1, circular: false, top: true, preset: true, temp: false, useStrandColor: false, strandColor: null, constraints: {} }
+  ];
+  const incoming = [
+    { id: 0, type: 'G', molecule: 'DNA', geometry: 'B', position: { x: 0, y: 0, z: 0 }, up: null, down: 1, across: null, slide: [], sticky: null, stickyID: 0, strand: 1, circular: false, top: true, preset: true, temp: false, useStrandColor: false, strandColor: null, constraints: {} },
+    { id: 1, type: 'C', molecule: 'DNA', geometry: 'B', position: { x: 1, y: 0, z: 0 }, up: 0, down: null, across: null, slide: [], sticky: null, stickyID: 0, strand: 1, circular: false, top: false, preset: true, temp: false, useStrandColor: false, strandColor: null, constraints: {} }
+  ];
+  const data = appendImportedDesigns(current, [{ name: 'added.dna', bases: incoming }], { gap: 6 });
+
+  assert.equal(data.bases.length, 3);
+  assert.deepEqual(data.bases[0].position, current[0].position);
+  assert.equal(data.bases[1].id, 6);
+  assert.equal(data.bases[2].id, 7);
+  assert.equal(data.bases[1].down, 7);
+  assert.equal(data.bases[2].up, 6);
+  assert.ok(data.bases[1].position.x > current[0].position.x + 5);
+  assert.equal(data.diagnostics.appendedDesignCount, 1);
+  assert.equal(data.diagnostics.appendedBases, 2);
 });
 
 test('selection modes select expected graph neighborhoods', () => {
@@ -185,6 +240,47 @@ test('create strand honors dialog-style count, initial mode, orientation, and mo
   assert.ok(model.bases.every((base) => base.type === 'X'));
   assert.equal(model.getBase(1).molecule, 'RNA');
   assert.ok(model.getBase(0).position.y > model.getBase(2).position.y);
+});
+
+test('Tiamat-style sequence design fills generic bases and preserves complements', () => {
+  const model = new TiamatModel();
+  model.createHelix('XXXXXXXX', {
+    molecule: 'DNA',
+    geometry: 'B',
+    radius: 1,
+    rise: 0.332,
+    twist: -34.28571,
+    double: true
+  });
+  const result = model.designSequence({
+    sequenceLimit: 4,
+    repeatLimit: 3,
+    gRepeatLimit: 3,
+    gcTarget: 0.5,
+    timeout: 2,
+    preserveExisting: true
+  });
+  assert.equal(result.editable, 16);
+  assert.equal(model.bases.some((base) => base.type === 'X'), false);
+  model.bases.forEach((base) => {
+    const across = model.getBase(base.across);
+    if (across) assert.equal(across.type, base.type === 'A' ? 'T' : base.type === 'T' ? 'A' : base.type === 'C' ? 'G' : 'C');
+  });
+});
+
+test('sequence design can preserve preset bases while filling only generic bases', () => {
+  const model = new TiamatModel();
+  model.createLine('AXXG', { molecule: 'DNA', geometry: 'B' });
+  const result = model.designSequence({
+    preserveExisting: true,
+    useSequenceLimit: false,
+    useRepeatLimit: false,
+    useGRepeatLimit: false
+  });
+  assert.equal(result.editable, 2);
+  assert.equal(model.bases[0].type, 'A');
+  assert.equal(model.bases[3].type, 'G');
+  assert.equal(model.bases.slice(1, 3).some((base) => base.type === 'X'), false);
 });
 
 test('freeform creation samples control points and attaches endpoints', () => {
@@ -268,6 +364,77 @@ test('oxView parser accepts both pair and bp fields', () => {
   assert.equal(model.bases.filter((base) => base.across !== null).length / 2, 2);
 });
 
+test('oxView export emits systems, strands, monomers, neighbors, and base pairs', () => {
+  const model = new TiamatModel();
+  model.createHelix('ATGC', {
+    molecule: 'DNA',
+    geometry: 'B',
+    radius: 1,
+    rise: 0.332,
+    twist: -34.28571,
+    double: true
+  });
+  const oxview = JSON.parse(oxViewJson(model));
+  assert.ok(Array.isArray(oxview.box));
+  assert.equal(oxview.systems.length, 1);
+  assert.equal(oxview.systems[0].strands.length, 2);
+  const strand = oxview.systems[0].strands[0];
+  assert.equal(strand.class, 'NucleicAcidStrand');
+  assert.equal(strand.end5, strand.monomers[0].id);
+  assert.equal(strand.end3, strand.monomers.at(-1).id);
+  assert.equal(strand.monomers[0].n3, strand.monomers[1].id);
+  assert.equal(strand.monomers[1].n5, strand.monomers[0].id);
+  assert.equal(typeof strand.monomers[0].bp, 'number');
+  assert.deepEqual(Object.keys(strand.monomers[0]).filter((key) => ['id', 'type', 'class', 'p', 'a1', 'a3'].includes(key)).sort(), ['a1', 'a3', 'class', 'id', 'p', 'type']);
+  const exported = strand.monomers[0];
+  const exportedCenter = new THREE.Vector3(...exported.p);
+  const nextCenter = new THREE.Vector3(...strand.monomers[1].p);
+  const pairedCenter = new THREE.Vector3(...oxview.systems[0].strands[1].monomers.at(-1).p);
+  const a1 = new THREE.Vector3(...exported.a1);
+  const a3 = new THREE.Vector3(...exported.a3);
+  assert.ok(Math.abs(a1.dot(a3)) < 0.00001);
+  assert.deepEqual(exported.p, [-0.6, 0, 0]);
+  assert.ok(Math.abs((nextCenter.z - exportedCenter.z) - 0.3897628551303122) < 0.00001);
+  assert.ok(Math.abs(pairedCenter.distanceTo(exportedCenter) - 1.2) < 0.00001);
+  assert.notEqual(
+    Number((model.bases[1].position.y - model.bases[0].position.y).toFixed(3)),
+    Number((nextCenter.z - exportedCenter.z).toFixed(3))
+  );
+
+  const roundtrip = parseOxViewProject(JSON.stringify(oxview));
+  const loaded = new TiamatModel();
+  loaded.loadBases(roundtrip.bases);
+  assert.equal(loaded.bases.length, model.bases.length);
+  assert.equal(loaded.bases.filter((base) => base.across !== null).length / 2, 4);
+  assert.equal(loaded.strands().length, 2);
+});
+
+test('oxDNA topology import/export preserves 3 and 5 neighbor directions', () => {
+  const top = [
+    '2 1',
+    '1 A -1 1',
+    '1 T 0 -1'
+  ].join('\n');
+  const conf = [
+    't = 0',
+    'b = 10 10 10',
+    'E = 0 0 0',
+    '0 0 0 1 0 0 0 1 0 0 0 0 0 0 0',
+    '0 0 1 1 0 0 0 1 0 0 0 0 0 0 0'
+  ].join('\n');
+  const parsed = parseOxDnaTopConf(top, conf);
+  assert.equal(parsed.bases[0].up, 1);
+  assert.equal(parsed.bases[0].down, null);
+  assert.equal(parsed.bases[1].up, null);
+  assert.equal(parsed.bases[1].down, 0);
+
+  const model = new TiamatModel();
+  model.loadBases(parsed.bases);
+  const exported = oxDnaText(model);
+  assert.ok(exported.includes('1 A -1 1'));
+  assert.ok(exported.includes('1 T 0 -1'));
+});
+
 test('raw Tiamat .dna fixtures import through MFC object graph with strand colors', () => {
   const available = TIAMAT_DNA_FIXTURES.filter((fixture) => existsSync(fixture.path));
   if (!available.length) return 'skipped: fixtures not found';
@@ -321,6 +488,42 @@ test('legacy text-transformed Tiamat .dna files import with repaired coordinates
     assert.ok(data.diagnostics.replacementSequences > 0);
     assert.ok(data.bases.some((base) => Math.hypot(base.position.x, base.position.y, base.position.z) > 0.1));
   });
+});
+
+test('clean ssRNA Tiamat .dna imports as raw binary with original coordinates', () => {
+  if (!existsSync(TIAMAT_CLEAN_SSRNA_FIXTURE.path)) return 'skipped: clean ssRNA fixture not found';
+  const buffer = readFileSync(TIAMAT_CLEAN_SSRNA_FIXTURE.path);
+  const data = parseDnaFile(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  assert.equal(data.diagnostics.recovery, 'raw binary');
+  assert.equal(data.diagnostics.corrupted, false);
+  assert.equal(data.diagnostics.schema, 3);
+  assert.equal(data.bases.length, TIAMAT_CLEAN_SSRNA_FIXTURE.bases);
+  assert.equal(data.diagnostics.strands, TIAMAT_CLEAN_SSRNA_FIXTURE.strands);
+  assert.equal(data.diagnostics.pairs, TIAMAT_CLEAN_SSRNA_FIXTURE.pairs);
+  assert.equal(data.diagnostics.coordinateQuality, 1);
+});
+
+test('UTF-8 transformed .dna exact inverse is ambiguous without a reference', () => {
+  if (!existsSync(TIAMAT_CLEAN_SSRNA_FIXTURE.path) || !existsSync(TIAMAT_BROKEN_SSRNA_FIXTURE)) {
+    return 'skipped: ssRNA transform pair not found';
+  }
+  const clean = readFileSync(TIAMAT_CLEAN_SSRNA_FIXTURE.path);
+  const broken = readFileSync(TIAMAT_BROKEN_SSRNA_FIXTURE);
+  const transform = (bytes) => new TextEncoder().encode(new TextDecoder('utf-8').decode(bytes));
+  const sameBytes = (a, b) => a.length === b.length && a.every((value, index) => value === b[index]);
+
+  assert.equal(sameBytes(transform(clean), broken), true);
+
+  const mutated = Buffer.from(clean);
+  assert.equal(mutated[812], 0x80);
+  mutated[812] = 0x81;
+  assert.equal(Buffer.compare(clean, mutated) === 0, false);
+  assert.equal(sameBytes(transform(mutated), broken), true);
+
+  const data = parseDnaFile(mutated.buffer.slice(mutated.byteOffset, mutated.byteOffset + mutated.byteLength));
+  assert.equal(data.diagnostics.recovery, 'raw binary');
+  assert.equal(data.bases.length, TIAMAT_CLEAN_SSRNA_FIXTURE.bases);
+  assert.equal(data.diagnostics.coordinateQuality, 1);
 });
 
 test('cadnano v2 JSON imports scaffold/staple graph and colors', () => {
