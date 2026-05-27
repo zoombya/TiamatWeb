@@ -93,6 +93,7 @@ export class TiamatScene extends EventTarget {
     this.connectionMode = 'cylinders';
     this.simplifyMode = 'never';
     this.schematicDisplay = 'mixed';
+    this.colorMode = 'hybrid';
     this.showPairs = true;
     this.showSlides = true;
     this.showSticky = true;
@@ -288,6 +289,12 @@ export class TiamatScene extends EventTarget {
     this.dispatchRenderSettings();
   }
 
+  setColorMode(mode) {
+    this.colorMode = ['hybrid', 'identity', 'strand', 'molecule', 'constraint', 'selection'].includes(mode) ? mode : 'hybrid';
+    this.renderModel();
+    this.dispatchRenderSettings();
+  }
+
   setTransformTool(mode) {
     this.transformTool = ['translate', 'rotate'].includes(mode) ? mode : 'off';
     this.updateTransformControl();
@@ -338,6 +345,7 @@ export class TiamatScene extends EventTarget {
       connectionMode: this.connectionMode,
       simplifyMode: this.simplifyMode,
       schematicDisplay: this.schematicDisplay,
+      colorMode: this.colorMode,
       lineWidth: this.lineWidth,
       baseLineWidth: this.baseLineWidth,
       visible: {
@@ -359,6 +367,7 @@ export class TiamatScene extends EventTarget {
     this.connectionMode = settings.connectionMode === 'cylinders' ? 'cylinders' : 'lines';
     this.simplifyMode = ['always', 'sometimes', 'never'].includes(settings.simplifyMode) ? settings.simplifyMode : this.simplifyMode;
     this.schematicDisplay = ['detailed', 'mixed', 'schematic'].includes(settings.schematicDisplay) ? settings.schematicDisplay : this.schematicDisplay;
+    this.colorMode = ['hybrid', 'identity', 'strand', 'molecule', 'constraint', 'selection'].includes(settings.colorMode) ? settings.colorMode : this.colorMode;
     if (this.connectionMode === 'cylinders' && this.simplifyMode !== 'never') this.simplifyMode = 'never';
     if (this.simplifyMode !== 'never') this.connectionMode = 'lines';
     if (this.schematicDisplay === 'schematic' && this.simplifyMode === 'never') this.simplifyMode = 'always';
@@ -543,14 +552,12 @@ export class TiamatScene extends EventTarget {
       const scale = hideDetailedMarker ? 0.0001 : selected ? SELECTED_SCALE : 1;
       matrix.compose(baseSitePosition(base), new THREE.Quaternion(), new THREE.Vector3(scale, scale, scale));
       this.baseMesh.setMatrixAt(index, matrix);
-      color.set(BASES[base.type]?.color ?? BASES.X.color);
-      color.offsetHSL(0, 0.06, 0.05);
+      color.copy(this.baseRenderColor(base));
       if (selected) color.lerp(new THREE.Color(0xffffff), 0.28);
       this.baseMesh.setColorAt(index, color);
       phosphateMatrix.compose(phosphatePosition(base), new THREE.Quaternion(), new THREE.Vector3(scale, scale, scale));
       this.phosphateMesh.setMatrixAt(index, phosphateMatrix);
-      phosphateColor.set(this.model.displayColor(base));
-      phosphateColor.offsetHSL(0, 0.08, 0.02);
+      phosphateColor.copy(this.backboneRenderColor(base));
       if (selected) phosphateColor.lerp(new THREE.Color(0xffffff), 0.3);
       this.phosphateMesh.setColorAt(index, phosphateColor);
       if (selected && !hideDetailedMarker) {
@@ -589,13 +596,13 @@ export class TiamatScene extends EventTarget {
     const seen = new Set();
     this.schematic.segments.forEach((segment) => {
       pushPoints(strand, segment.start, segment.end);
-      const color = new THREE.Color(this.model.displayColor(segment.base));
+      const color = this.backboneRenderColor(segment.base);
       strandColors.push(color.r, color.g, color.b, color.r, color.g, color.b);
       schematicSegments.push({ start: segment.start, end: segment.end, color });
     });
     this.model.bases.forEach((base) => {
       if (this.schematic.hiddenIds.has(base.id) && !this.model.selectedIds.has(base.id)) return;
-      if (base.down !== null) pushColoredSegment(strand, strandColors, strandSegments, base, this.model.getBase(base.down), this.model);
+      if (base.down !== null) pushColoredSegment(strand, strandColors, strandSegments, base, this.model.getBase(base.down), this.model, (item) => this.backboneRenderColor(item));
       if (this.showPairs && base.across !== null && this.shouldDrawPairLine(base, this.model.getBase(base.across))) {
         pushUniquePair(pair, pairSegments, seen, 'a', base, this.model.getBase(base.across), this.model);
       }
@@ -650,6 +657,10 @@ export class TiamatScene extends EventTarget {
         base.sticky ?? '',
         (base.slide ?? []).join('.'),
         this.model.displayColor(base),
+        this.colorMode,
+        base.type,
+        base.molecule,
+        Object.values(base.constraints?.violations ?? {}).filter(Boolean).length,
         base.oxView?.a1?.join('.') ?? '',
         base.oxView?.a3?.join('.') ?? '',
         base.position.x.toFixed(4),
@@ -658,6 +669,36 @@ export class TiamatScene extends EventTarget {
       );
     });
     return parts.join('|');
+  }
+
+  baseRenderColor(base) {
+    if (this.colorMode === 'hybrid') {
+      return new THREE.Color(BASES[base.type]?.color ?? BASES.X.color).offsetHSL(0, 0.06, 0.05);
+    }
+    return this.semanticColor(base);
+  }
+
+  backboneRenderColor(base) {
+    if (this.colorMode === 'hybrid') {
+      return new THREE.Color(this.model.displayColor(base)).offsetHSL(0, 0.08, 0.02);
+    }
+    return this.semanticColor(base);
+  }
+
+  semanticColor(base) {
+    if (this.colorMode === 'identity') return new THREE.Color(BASES[base.type]?.color ?? BASES.X.color).offsetHSL(0, 0.06, 0.05);
+    if (this.colorMode === 'molecule') return new THREE.Color(base.molecule === 'RNA' ? 0xdf74ff : 0x58d3e4);
+    if (this.colorMode === 'constraint') {
+      const violations = Object.values(base.constraints?.violations ?? {}).filter(Boolean).length;
+      if (violations) return new THREE.Color(0xff746d);
+      return new THREE.Color(this.model.displayColor(base)).offsetHSL(0.02, -0.08, 0.02);
+    }
+    if (this.colorMode === 'selection') {
+      return this.model.selectedIds.has(base.id)
+        ? new THREE.Color(0xffffff)
+        : new THREE.Color(this.model.displayColor(base)).offsetHSL(0, -0.22, -0.08);
+    }
+    return new THREE.Color(this.model.displayColor(base)).offsetHSL(0, 0.08, 0.02);
   }
 
   rebuildOrientationLines() {
@@ -1078,12 +1119,8 @@ export class TiamatScene extends EventTarget {
     this.dispatchViewChange();
     if (this.transformTool !== 'off' && this.model.selectedIds.size > 0 && event.button === 0) {
       const handle = this.hitTransformGizmo(event, view) ?? this.hoveredTransformHandleFor(view);
-      if (this.transformTool === 'rotate' && !handle) {
-        this.clearHoveredTransformHandle();
-      } else {
-        this.startManipulation(event, view, handle);
-        return;
-      }
+      this.startManipulation(event, view, handle);
+      return;
     }
     if (this.mode === 'selectBox') {
       this.startSelectionBox(event, view);
@@ -1454,6 +1491,15 @@ export class TiamatScene extends EventTarget {
     if (id === 'side') return new THREE.Vector3(1, 0, 0);
     if (id === 'top') return new THREE.Vector3(0, 1, 0);
     return this.camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(-1);
+  }
+
+  pasteOffsetForActiveView(distance = 0.8) {
+    const views = this.viewRects.length ? this.viewRects : this.computeViewRects(this.viewport.clientWidth, this.viewport.clientHeight);
+    const view = views.find((item) => item.id === this.activeView) ?? views.find((item) => item.id === 'perspective');
+    const camera = view?.camera ?? this.camera;
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion).normalize();
+    const up = camera.up.clone().normalize();
+    return right.add(up.multiplyScalar(-0.35)).normalize().multiplyScalar(distance);
   }
 
   startSelectionBox(event, view) {
@@ -2011,13 +2057,13 @@ function schematicCenter(oneBase, twoBase, threeBase, direction) {
   return one.multiplyScalar(alpha).add(two.multiplyScalar(beta)).add(three.multiplyScalar(gamma));
 }
 
-function pushColoredSegment(list, colors, segments, a, b, model) {
+function pushColoredSegment(list, colors, segments, a, b, model, colorForBase = (base) => new THREE.Color(model.displayColor(base))) {
   if (!a || !b) return;
   const start = phosphatePosition(a);
   const end = phosphatePosition(b);
   list.push(start.x, start.y, start.z, end.x, end.y, end.z);
-  const startColor = new THREE.Color(model.displayColor(a));
-  const endColor = new THREE.Color(model.displayColor(b));
+  const startColor = colorForBase(a);
+  const endColor = colorForBase(b);
   const selected = model.selectedIds.has(a.id) || model.selectedIds.has(b.id);
   if (selected) {
     startColor.lerp(new THREE.Color(0xffffff), 0.42);

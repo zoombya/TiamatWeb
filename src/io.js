@@ -196,6 +196,22 @@ export function sequenceText(model) {
   }).join('\n');
 }
 
+export function sequenceFasta(model) {
+  return model.strands().map((strand, index) => {
+    const head = strand[0];
+    const circular = head?.circular ? ' circular' : '';
+    const molecule = head?.molecule ?? 'DNA';
+    const sequence = strand.map((base) => base.type).join('');
+    return `>strand_${index + 1} length=${strand.length} molecule=${molecule}${circular}\n${wrapSequence(sequence)}`;
+  }).join('\n');
+}
+
+function wrapSequence(sequence, width = 80) {
+  const lines = [];
+  for (let i = 0; i < sequence.length; i += width) lines.push(sequence.slice(i, i + width));
+  return lines.join('\n');
+}
+
 export function pdbText(model) {
   let atom = 1;
   const lines = [];

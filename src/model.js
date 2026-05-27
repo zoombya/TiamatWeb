@@ -309,7 +309,9 @@ export class TiamatModel extends EventTarget {
     const molecule = strand[0]?.molecule ?? 'DNA';
     const clean = cleanSequence(sequence, molecule);
     if (!clean) return { changed: 0, length: strand.length };
-    const fitted = clean.repeat(Math.ceil(strand.length / clean.length)).slice(0, strand.length);
+    const fitted = options.repeat === false
+      ? clean.padEnd(strand.length, 'X').slice(0, strand.length)
+      : clean.repeat(Math.ceil(strand.length / clean.length)).slice(0, strand.length);
     this.commit('set strand sequence');
     let changed = 0;
     strand.forEach((base, index) => {
@@ -330,6 +332,43 @@ export class TiamatModel extends EventTarget {
     this.updateGeometryMeasurements();
     this.emit();
     return { changed, length: strand.length };
+  }
+
+  complementSelectedStrand(options = {}) {
+    const strand = this.strandForBase(options.id ?? this.activeId);
+    if (!strand.length) return { changed: 0, length: 0 };
+    this.commit('generate complements');
+    let changed = 0;
+    strand.forEach((base) => {
+      const paired = this.getBase(base.across);
+      if (!paired) return;
+      const next = complementFor(base);
+      if (paired.type !== next) changed += 1;
+      paired.type = next;
+      paired.preset = paired.type !== 'X';
+    });
+    this.updateGeometryMeasurements();
+    this.emit();
+    return { changed, length: strand.length };
+  }
+
+  assignSelectedStrandFromGenome(genome, options = {}) {
+    const strand = this.strandForBase(options.id ?? this.activeId);
+    if (!strand.length) return { changed: 0, length: 0, sourceLength: 0 };
+    const molecule = strand[0]?.molecule ?? 'DNA';
+    const clean = cleanSequence(genome, molecule);
+    if (!clean) return { changed: 0, length: strand.length, sourceLength: 0 };
+    const start = Math.max(0, Math.min(Number(options.start) || 0, Math.max(0, clean.length - strand.length)));
+    const window = clean.slice(start, start + strand.length);
+    return {
+      ...this.setSelectedStrandSequence(window, {
+        id: options.id,
+        repeat: false,
+        complementPairs: options.complementPairs
+      }),
+      sourceLength: clean.length,
+      start
+    };
   }
 
   designSequence(options = {}) {
@@ -890,18 +929,24 @@ export class TiamatModel extends EventTarget {
 
   copySelected() {
     this.clipboard = this.selectedBases().map((base) => structuredClone(base));
+    this.clipboardCenter = this.clipboard.length
+      ? this.clipboard.reduce((sum, base) => sum.add(vectorFrom(base.position)), new THREE.Vector3()).multiplyScalar(1 / this.clipboard.length)
+      : new THREE.Vector3();
+    this.clipboardPasteCount = 0;
   }
 
-  pasteClipboard() {
+  pasteClipboard(options = {}) {
     if (!this.clipboard.length) return 0;
     this.commit('paste');
     const idMap = new Map();
+    const offset = vectorFrom(options.offset ?? { x: 0, y: 0, z: 0 });
+    if (offset.lengthSq() > 0) offset.multiplyScalar((this.clipboardPasteCount ?? 0) + 1);
     const clones = this.clipboard.map((base, index) => {
       const clone = structuredClone(base);
       const id = this.nextId() + index;
       idMap.set(base.id, id);
       clone.id = id;
-      clone.position = positionFrom(vectorFrom(base.position));
+      clone.position = positionFrom(vectorFrom(base.position).add(offset));
       this.bases.push(clone);
       this.baseById.set(id, clone);
       return clone;
@@ -918,6 +963,7 @@ export class TiamatModel extends EventTarget {
     this.assignStrands();
     this.updateGeometryMeasurements();
     this.emit();
+    this.clipboardPasteCount = (this.clipboardPasteCount ?? 0) + 1;
     return clones.length;
   }
 

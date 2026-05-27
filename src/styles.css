@@ -42,8 +42,8 @@ textarea {
 button,
 .buttonLike {
   min-height: 30px;
-  border: 1px solid transparent;
-  background: #1a242d;
+  border: 1px solid #263744;
+  background: linear-gradient(#1d2933, #17222b);
   color: var(--text);
   border-radius: 6px;
   cursor: pointer;
@@ -60,7 +60,7 @@ button:hover,
 
 button.selected {
   border-color: var(--accent);
-  background: var(--accent-soft);
+  background: linear-gradient(rgba(88, 211, 228, 0.22), rgba(88, 211, 228, 0.1));
   color: #dffaff;
 }
 
@@ -253,7 +253,8 @@ small,
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 7px;
-  background: var(--panel);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--panel), white 3%), var(--panel));
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035) inset;
 }
 
 .toolCard {
@@ -344,6 +345,10 @@ details[open] summary::after {
 
 .segmented[aria-label="Draw commands"] {
   grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.colorModes {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .sequenceActions {
@@ -592,6 +597,10 @@ textarea {
   min-height: 0;
 }
 
+.sequencePanel textarea {
+  min-height: 84px;
+}
+
 .trayHead {
   display: flex;
   justify-content: space-between;
@@ -613,6 +622,11 @@ textarea {
   min-width: 0;
   padding: 8px 9px;
   text-align: left;
+}
+
+.strandItem.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft), var(--field) 36%);
 }
 
 .strandItem span {

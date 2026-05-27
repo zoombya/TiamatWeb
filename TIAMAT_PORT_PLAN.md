@@ -4,7 +4,7 @@ This is the living implementation plan for porting the original Tiamat MFC/OpenG
 
 ## Current Port Status
 
-Last updated: 2026-05-23
+Last updated: 2026-05-27
 
 ### Implemented
 
@@ -146,6 +146,8 @@ Last updated: 2026-05-23
   - [x] Updated fresh render defaults to cylinders, strand line width 5, and pair line width 3.
   - Need original toolbar icons and exact command/menu naming.
   - [x] Clarified distinction between global render settings, selection properties, and active tool/create settings.
+  - [x] Added selectable render coloring modes: hybrid base/strand, base identity, strand/custom, molecule, constraint state, and selection focus.
+  - [x] Added active-strand sequence editor workflow beside the strand list.
 
 ## Original Tiamat Functionality Still To Port
 
@@ -157,7 +159,7 @@ Last updated: 2026-05-23
   - Genome list management.
   - FASTA import.
   - Genome fetch/search flow.
-  - Sequence editing and assignment to strands.
+  - [x] Initial sequence editing and assignment to active strands.
 - [ ] Original dialogs:
   - Create DNA dialog.
   - Freeform creation controls.
@@ -191,12 +193,13 @@ Last updated: 2026-05-23
 - [ ] Original position mode:
   - Drag selected bases in perspective and orthographic views.
   - Update undo operation while dragging.
-- [ ] Original rotation mode:
-  - View-dependent rotation interaction.
-  - Rotation around selected center.
-- [ ] Original copy/paste connection preservation and placement semantics.
+- [x] Original rotation mode:
+  - [x] View-dependent rotation interaction starts from Rotation mode even without grabbing a gizmo ring.
+  - [x] Rotation around selected center.
+- [x] Original copy/paste connection preservation and placement semantics.
 - [x] Tiamat-style paste now preserves copied coordinates and removes copied links that point outside the copied set.
 - [x] Paste now enables Position mode and the move gizmo by default.
+  - [x] UI paste applies a view-dependent placement offset so pasted selections are visible and immediately movable while model-level paste can still preserve exact copied coordinates for tests/import workflows.
 - [ ] Original delete behavior for all edge cases.
 
 ### Connections And Constraints
@@ -258,11 +261,19 @@ Last updated: 2026-05-23
 
 ### Sequence And Strand Tools
 
-- [ ] Strand sequence inspector parity.
-- [ ] Base sequence editing by strand.
-- [ ] Complement generation and sequence assignment rules.
-- [ ] Genome-guided scaffold/staple assignment if present in original workflows.
-- [ ] Export sequence formats used by the original app.
+- [x] Strand sequence inspector parity.
+  - Active strand sequence is shown in the strand workflow panel and refreshed with selection.
+- [x] Base sequence editing by strand.
+  - Active strand can be read, edited, and applied from the strand workflow editor.
+- [x] Complement generation and sequence assignment rules.
+  - Strand sequence assignment can leave paired strands untouched or update complements explicitly.
+  - Complement generation can fill paired bases from the active strand.
+- [x] Genome-guided scaffold/staple assignment if present in original workflows.
+  - Initial genome-guided assignment uses the genome text field as a source sequence for the active strand and can update paired complements.
+  - Remaining gap: original genome database/list/search workflow is not ported.
+- [x] Export sequence formats used by the original app.
+  - Strand list TXT export.
+  - FASTA export with strand length and molecule metadata.
 
 ### Optimization
 

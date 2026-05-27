@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { TiamatModel } from '../src/model.js';
 import { DOWN_DISTANCE, TIAMAT_GEOMETRY } from '../src/constants.js';
 import { vectorFrom } from '../src/geometry.js';
-import { appendImportedDesigns, dnaJson, fullProjectJson, mergeImportedDesigns, oxDnaText, oxViewJson, parseOxDnaTopConf, parseDnaFile, parseJsonProject, parseOxViewProject } from '../src/io.js';
+import { appendImportedDesigns, dnaJson, fullProjectJson, mergeImportedDesigns, oxDnaText, oxViewJson, parseOxDnaTopConf, parseDnaFile, parseJsonProject, parseOxViewProject, sequenceFasta, sequenceText } from '../src/io.js';
 import { ScreenSelectionIndex } from '../src/selection-index.js';
 import { isSchematicRunNeighbor } from '../src/scene.js';
 
@@ -287,6 +287,29 @@ test('selected strand sequence can be read and applied without touching compleme
   assert.equal(model.getBase(model.bases[2].across).type, 'A');
 });
 
+test('strand sequence tools support complements, genome slices, and exports', () => {
+  const model = new TiamatModel();
+  model.createHelix('AAAA', {
+    molecule: 'DNA',
+    geometry: 'B',
+    radius: 1,
+    rise: 0.332,
+    twist: -34.28571,
+    double: true
+  });
+  model.setSelectedStrandSequence('CCCC', { complementPairs: false });
+  const complementResult = model.complementSelectedStrand();
+  assert.equal(complementResult.changed, 4);
+  model.strandForBase(model.activeId).forEach((base) => {
+    assert.equal(model.getBase(base.across).type, 'G');
+  });
+  const genomeResult = model.assignSelectedStrandFromGenome('TTGCAAGG', { complementPairs: true });
+  assert.equal(genomeResult.sourceLength, 8);
+  assert.equal(model.selectedStrandSequence(), 'TTGC');
+  assert.equal(sequenceText(model).includes('1: TTGC'), true);
+  assert.equal(sequenceFasta(model).includes('>strand_1 length=4 molecule=DNA'), true);
+});
+
 test('base identity changes complement only when requested', () => {
   const model = new TiamatModel();
   model.createHelix('A', {
@@ -376,6 +399,18 @@ test('paste preserves copied coordinates and strips links outside copied set', (
   assert.equal(pasted[0].down, pasted[1].id);
   assert.equal(pasted[1].up, pasted[0].id);
   assert.equal(pasted[1].down, null);
+});
+
+test('paste can apply view placement offset while preserving internal connections', () => {
+  const model = new TiamatModel();
+  model.createLine('AT', { molecule: 'DNA', geometry: 'B' });
+  model.selectAll();
+  model.copySelected();
+  assert.equal(model.pasteClipboard({ offset: { x: 1, y: 0, z: 0 } }), 2);
+  const pasted = model.selectedBases().sort((a, b) => a.id - b.id);
+  assert.equal(pasted[0].position.x, model.bases[0].position.x + 1);
+  assert.equal(pasted[0].down, pasted[1].id);
+  assert.equal(pasted[1].up, pasted[0].id);
 });
 
 test('ligation joins compatible 3 and 5 prime ends regardless of distance', () => {

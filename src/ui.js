@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { BASES, CONSTRAINTS, STRAND_COLORS, TIAMAT_GEOMETRY } from './constants.js';
 import { cleanSequence, formatVector } from './geometry.js';
-import { appendImportedDesigns, dnaJson, download, fullProjectJson, mergeImportedDesigns, mergeMetadataFromDna, oxViewJson, parseOxDnaTopConf, parseDnaFile, parseJsonProject, parseOxViewProject, parsePdb, parseSequenceText } from './io.js';
+import { appendImportedDesigns, dnaJson, download, fullProjectJson, mergeImportedDesigns, mergeMetadataFromDna, oxViewJson, parseOxDnaTopConf, parseDnaFile, parseJsonProject, parseOxViewProject, parsePdb, parseSequenceText, sequenceFasta, sequenceText } from './io.js';
 
 const RENDER_SETTINGS_KEY = 'tiamat-web.render-settings.v2';
 
@@ -185,6 +185,15 @@ export function mountApp(root) {
             <button data-simplify-mode="sometimes">Sometimes</button>
             <button class="selected" data-simplify-mode="never">Never</button>
           </div>
+          <label>Coloring</label>
+          <div class="segmented colorModes" aria-label="Coloring mode">
+            <button class="selected" data-color-mode="hybrid">Hybrid</button>
+            <button data-color-mode="identity">Bases</button>
+            <button data-color-mode="strand">Strands</button>
+            <button data-color-mode="molecule">Molecule</button>
+            <button data-color-mode="constraint">Checks</button>
+            <button data-color-mode="selection">Selection</button>
+          </div>
           <label>Strand lines</label>
           <div class="segmented" aria-label="Strand line width">
             <button data-line-width="1">1</button>
@@ -321,6 +330,18 @@ export function mountApp(root) {
 
         <section class="panel sequencePanel">
           <div class="trayHead"><h2>Strands</h2><button data-action="clearDesign">Clear</button></div>
+          <textarea id="strandSequenceInput" aria-label="Active strand sequence" spellcheck="false"></textarea>
+          <div class="buttonrow sequenceActions">
+            <button data-action="readStrandSequence">Read</button>
+            <button data-action="applyStrandSequence">Apply</button>
+            <button data-action="complementStrand">Complement</button>
+          </div>
+          <label class="checkline"><input id="strandComplementInput" type="checkbox"> Update paired strand</label>
+          <div class="buttonrow sequenceActions">
+            <button data-action="assignGenomeStrand">Genome</button>
+            <button data-action="exportSequenceTxt">TXT</button>
+            <button data-action="exportSequenceFasta">FASTA</button>
+          </div>
           <div id="strandList"></div>
         </section>
       </aside>
@@ -422,6 +443,14 @@ export class TiamatUI {
         this.scene.setSchematicDisplay(button.dataset.schematicDisplay);
         this.persistRenderSettings();
         this.status(`Schematic ${button.dataset.schematicDisplay}`);
+      });
+    });
+    document.querySelectorAll('[data-color-mode]').forEach((button) => {
+      button.addEventListener('click', () => {
+        document.querySelectorAll('[data-color-mode]').forEach((b) => b.classList.toggle('selected', b === button));
+        this.scene.setColorMode(button.dataset.colorMode);
+        this.persistRenderSettings();
+        this.status(`Coloring ${colorModeLabel(button.dataset.colorMode)}`);
       });
     });
     document.querySelectorAll('[data-transform-tool]').forEach((button) => {
@@ -538,6 +567,10 @@ export class TiamatUI {
     if (action === 'clearFreeform') this.clearFreeform();
     if (action === 'getSelectedSequence') this.getSelectedSequence();
     if (action === 'setSelectedSequence') this.setSelectedSequence();
+    if (action === 'readStrandSequence') this.readStrandSequence();
+    if (action === 'applyStrandSequence') this.applyStrandSequence();
+    if (action === 'complementStrand') this.complementStrand();
+    if (action === 'assignGenomeStrand') this.assignGenomeStrand();
     if (action === 'pairSelected') this.model.pairSelected();
     if (action === 'extendUp') this.model.extendSelected('up');
     if (action === 'extendDown') this.model.extendSelected('down');
@@ -577,6 +610,8 @@ export class TiamatUI {
     if (action === 'exportDnaJson') download('tiamat-export.dnajson', dnaJson(this.model), 'application/json');
     if (action === 'exportOxView') download('tiamat-export.oxview', oxViewJson(this.model), 'application/json');
     if (action === 'exportPng') download('tiamat-render.png', dataUrlToBlob(this.scene.exportPng()), 'image/png');
+    if (action === 'exportSequenceTxt') download('tiamat-sequences.txt', sequenceText(this.model), 'text/plain');
+    if (action === 'exportSequenceFasta') download('tiamat-sequences.fasta', sequenceFasta(this.model), 'text/plain');
     this.scene.setInteractionMode(this.mode, this.snap());
     this.updateInteractionHint();
   }
@@ -718,7 +753,7 @@ export class TiamatUI {
   }
 
   pasteSelection() {
-    const count = this.model.pasteClipboard();
+    const count = this.model.pasteClipboard({ offset: this.scene.pasteOffsetForActiveView() });
     if (count) {
       this.setMode('position');
       this.setTransformTool('translate');
@@ -825,6 +860,41 @@ export class TiamatUI {
     this.status(result.length
       ? `Set ${result.length} selected-strand bases${document.querySelector('#sequenceComplementInput')?.checked ? ' with complements' : ''}`
       : 'Select a strand before setting sequence');
+  }
+
+  readStrandSequence() {
+    const sequence = this.model.selectedStrandSequence();
+    if (!sequence) {
+      this.status('Select a strand to inspect its sequence');
+      return;
+    }
+    document.querySelector('#strandSequenceInput').value = sequence;
+    this.status(`Read ${sequence.length} bases from active strand`);
+  }
+
+  applyStrandSequence() {
+    const result = this.model.setSelectedStrandSequence(document.querySelector('#strandSequenceInput').value, {
+      complementPairs: document.querySelector('#strandComplementInput')?.checked
+    });
+    this.status(result.length
+      ? `Applied ${result.length} bases${document.querySelector('#strandComplementInput')?.checked ? ' and complements' : ''}`
+      : 'Select a strand before applying sequence');
+    this.updateStrandSequenceField();
+  }
+
+  complementStrand() {
+    const result = this.model.complementSelectedStrand();
+    this.status(result.length ? `Generated complements for ${result.changed} paired bases` : 'Select a strand with pairs');
+  }
+
+  assignGenomeStrand() {
+    const result = this.model.assignSelectedStrandFromGenome(document.querySelector('#seqGenomeInput')?.value ?? '', {
+      complementPairs: document.querySelector('#strandComplementInput')?.checked
+    });
+    this.status(result.length
+      ? `Assigned genome bases ${result.start + 1}-${result.start + result.length} of ${result.sourceLength}`
+      : 'Paste a genome sequence and select a strand');
+    this.updateStrandSequenceField();
   }
 
   addFreeformPoint({ id, position }) {
@@ -1110,14 +1180,30 @@ export class TiamatUI {
     this.syncBaseButtons();
     this.syncColorButtons();
     this.syncViewButtons();
+    this.updateStrandSequenceField(false);
     document.querySelector('#strandList').innerHTML = strands.map((strand, index) => {
       const head = strand[0];
-      return `<button class="strandItem" data-select-strand="${head.id}"><span>${index + 1}${head.circular ? 'c' : ''}: ${strandPreview(strand)}</span><small>${strand.length} bases</small></button>`;
+      const active = strand.some((base) => base.id === selected?.id);
+      return `<button class="strandItem ${active ? 'selected' : ''}" data-select-strand="${head.id}"><span>${index + 1}${head.circular ? 'c' : ''}: ${strandPreview(strand)}</span><small>${strand.length} bases</small></button>`;
     }).join('');
     document.querySelectorAll('[data-select-strand]').forEach((button) => {
       button.addEventListener('click', () => this.model.selectStrand(Number(button.dataset.selectStrand)));
     });
     this.updateContextPanels();
+  }
+
+  updateStrandSequenceField(force = true) {
+    const target = document.querySelector('#strandSequenceInput');
+    if (!target) return;
+    const active = this.model.activeBase();
+    if (!active) {
+      if (force) target.value = '';
+      target.placeholder = 'Select a strand to inspect or edit its sequence';
+      return;
+    }
+    const sequence = this.model.selectedStrandSequence(active.id);
+    target.placeholder = sequence ? `${sequence.length} bases on strand ${active.strand}` : 'No active strand';
+    if (force || document.activeElement !== target) target.value = sequence;
   }
 
   updateInteractionHint() {
@@ -1199,7 +1285,7 @@ export class TiamatUI {
     }
   }
 
-  syncRenderButtons({ connectionMode, simplifyMode, schematicDisplay, lineWidth, baseLineWidth, visible = {} }) {
+  syncRenderButtons({ connectionMode, simplifyMode, schematicDisplay, colorMode, lineWidth, baseLineWidth, visible = {} }) {
     document.querySelectorAll('[data-connection-mode]').forEach((button) => {
       button.classList.toggle('selected', button.dataset.connectionMode === connectionMode);
     });
@@ -1208,6 +1294,9 @@ export class TiamatUI {
     });
     document.querySelectorAll('[data-schematic-display]').forEach((button) => {
       button.classList.toggle('selected', button.dataset.schematicDisplay === schematicDisplay);
+    });
+    document.querySelectorAll('[data-color-mode]').forEach((button) => {
+      button.classList.toggle('selected', button.dataset.colorMode === colorMode);
     });
     document.querySelectorAll('[data-line-width]').forEach((button) => {
       button.classList.toggle('selected', Number(button.dataset.lineWidth) === Number(lineWidth));
@@ -1316,6 +1405,17 @@ function visibilityLabel(option) {
     constraints: 'Constraints',
     constraintGuard: 'Constrain transforms'
   }[option] ?? option;
+}
+
+function colorModeLabel(mode) {
+  return {
+    hybrid: 'hybrid',
+    identity: 'base identity',
+    strand: 'strand',
+    molecule: 'molecule',
+    constraint: 'constraint checks',
+    selection: 'selection'
+  }[mode] ?? mode;
 }
 
 function fileStem(name) {
