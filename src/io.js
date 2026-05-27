@@ -5,7 +5,6 @@ import { cleanSequence, normalizeBase, vectorFrom } from './geometry.js';
 export { parseDnaFile } from './dna-loader.js';
 
 const OXVIEW_NM_PER_UNIT = 0.8518;
-const OXDNA_BASE_BASE = 0.3897628551303122;
 const OXVIEW_NS_CENTER_A1 = 0.34;
 
 /**
@@ -280,17 +279,18 @@ function walkDnaJsonStrand(start, byId, visited) {
 }
 
 function oxViewMonomer(base, byId, idToOxId, colorById = null, frame = oxViewFrame(base, byId)) {
+  const bp = idToOxId.get(base.across);
   const monomer = {
     id: idToOxId.get(base.id),
     type: base.type === 'X' ? 'A' : base.type,
     class: base.molecule === 'RNA' ? 'RNA' : 'DNA',
     p: roundVector(frame.p),
     a1: roundVector(frame.a1),
-    a3: roundVector(frame.a3)
+    a3: roundVector(frame.a3),
+    cluster: bp !== undefined ? Math.min(idToOxId.get(base.id), bp) : idToOxId.get(base.id)
   };
   const n5 = idToOxId.get(base.up);
   const n3 = idToOxId.get(base.down);
-  const bp = idToOxId.get(base.across);
   if (n5 !== undefined) monomer.n5 = n5;
   if (n3 !== undefined) monomer.n3 = n3;
   if (bp !== undefined) monomer.bp = bp;
@@ -341,18 +341,9 @@ function oxDnaShapeTransform(bases, byId) {
   const center = bases
     .reduce((sum, base) => sum.add(vectorFrom(base.position)), new THREE.Vector3())
     .multiplyScalar(1 / bases.length);
-  const distances = bases
-    .map((base) => {
-      const down = byId.get(base.down);
-      if (!down) return null;
-      return vectorFrom(base.position).distanceTo(vectorFrom(down.position));
-    })
-    .filter((value) => Number.isFinite(value) && value > 0.000001)
-    .sort((a, b) => a - b);
-  const median = distances[Math.floor(distances.length / 2)] ?? 0;
   return {
     center,
-    scale: median > 0 ? OXDNA_BASE_BASE / median : 1 / OXVIEW_NM_PER_UNIT
+    scale: 1 / OXVIEW_NM_PER_UNIT
   };
 }
 

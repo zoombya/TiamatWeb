@@ -262,6 +262,50 @@ test('create strand honors dialog-style count, initial mode, orientation, and mo
   assert.ok(model.getBase(0).position.y > model.getBase(2).position.y);
 });
 
+test('selected strand sequence can be read and applied without touching complements', () => {
+  const model = new TiamatModel();
+  model.createHelix('AAAA', {
+    molecule: 'DNA',
+    geometry: 'B',
+    radius: 1,
+    rise: 0.332,
+    twist: -34.28571,
+    double: true
+  });
+  const selectedSequence = model.selectedStrandSequence();
+  assert.equal(selectedSequence, 'AAAA');
+  const paired = model.getBase(model.bases[0].across);
+  assert.equal(paired.type, 'T');
+  const result = model.setSelectedStrandSequence('CG', { complementPairs: false });
+  assert.equal(result.length, 4);
+  assert.equal(model.selectedStrandSequence(), 'CGCG');
+  assert.equal(paired.type, 'T');
+  model.setSelectedStrandSequence('AT', { complementPairs: true });
+  assert.equal(model.selectedStrandSequence(), 'ATAT');
+  assert.equal(paired.type, 'T');
+  assert.equal(model.getBase(model.bases[2].across).type, 'A');
+});
+
+test('base identity changes complement only when requested', () => {
+  const model = new TiamatModel();
+  model.createHelix('A', {
+    molecule: 'DNA',
+    geometry: 'B',
+    radius: 1,
+    rise: 0.332,
+    twist: -34.28571,
+    double: true
+  });
+  const paired = model.getBase(model.bases[0].across);
+  assert.equal(paired.type, 'T');
+  model.changeSelectedType('G');
+  assert.equal(model.bases[0].type, 'G');
+  assert.equal(paired.type, 'T');
+  model.changeSelectedType('C', { complementPairs: true });
+  assert.equal(model.bases[0].type, 'C');
+  assert.equal(paired.type, 'G');
+});
+
 test('Tiamat-style sequence design fills generic bases and preserves complements', () => {
   const model = new TiamatModel();
   model.createHelix('XXXXXXXX', {
@@ -408,13 +452,23 @@ test('oxView export is generated from DNA JSON fields and oxView nucleoside tran
   const second = oxview.systems[0].strands[0].monomers[1];
   const a1 = new THREE.Vector3(...first.a1);
   const a3 = new THREE.Vector3(...first.a3);
+  const expectedSiteDistance = positionVector(model.bases[0].position)
+    .distanceTo(positionVector(model.bases[2].position)) / 0.8518;
   assert.ok(new THREE.Vector3(...first.p).length() < 5);
   assert.ok(Math.abs(a1.dot(a3)) < 0.00001);
-  assert.ok(Math.abs(oxViewNucleosideSite(first).distanceTo(oxViewNucleosideSite(second)) - 0.3897628551303122) < 0.00001);
+  assert.ok(Math.abs(oxViewNucleosideSite(first).distanceTo(oxViewNucleosideSite(second)) - expectedSiteDistance) < 0.00001);
+  const paired = oxview.systems[0].strands.flatMap((strand) => strand.monomers).find((monomer) => monomer.id === first.bp);
+  assert.equal(paired.bp, first.id);
+  assert.equal(first.cluster, 0);
+  assert.equal(typeof first.color, 'number');
 });
 
 function oxViewNucleosideSite(monomer) {
   return new THREE.Vector3(...monomer.p).add(new THREE.Vector3(...monomer.a1).multiplyScalar(0.34));
+}
+
+function positionVector(position) {
+  return new THREE.Vector3(position.x, position.y, position.z);
 }
 
 test('oxDNA topology import/export preserves 3 and 5 neighbor directions', () => {

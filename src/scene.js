@@ -6,8 +6,10 @@ import { ScreenSelectionIndex } from './selection-index.js';
 
 const MOLECULE_RADIUS = 0.1;
 const BASE_RADIUS = MOLECULE_RADIUS;
-const PHOSPHATE_RADIUS = MOLECULE_RADIUS;
+const PHOSPHATE_RADIUS = MOLECULE_RADIUS * 1.32;
 const SELECTED_SCALE = 1.35;
+const BACKGROUND_COLOR = 0x24292f;
+const FOG_COLOR = 0x24292f;
 const VIEW_GAP = 8;
 const PICK_RADIUS_PX = 11;
 const WIDTH_TO_RADIUS = { 1: 0.01, 3: 0.025, 5: 0.05, 7: 0.075 };
@@ -46,6 +48,9 @@ export class TiamatScene extends EventTarget {
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
     this.renderer.autoClear = false;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.08;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(viewport.clientWidth, viewport.clientHeight);
     viewport.appendChild(this.renderer.domElement);
@@ -59,8 +64,8 @@ export class TiamatScene extends EventTarget {
     this.overlay.appendChild(this.selectionBox);
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x404040);
-    this.scene.fog = new THREE.FogExp2(0x404040, 0.035);
+    this.scene.background = new THREE.Color(BACKGROUND_COLOR);
+    this.scene.fog = new THREE.FogExp2(FOG_COLOR, 0.035);
 
     this.camera = new THREE.PerspectiveCamera(50, viewport.clientWidth / viewport.clientHeight, 0.01, 500);
     this.camera.position.set(8, 8, 12);
@@ -110,15 +115,21 @@ export class TiamatScene extends EventTarget {
   }
 
   initLights() {
-    const key = new THREE.DirectionalLight(0xffffff, 1.0);
-    key.position.set(1, 1, 1);
-    this.scene.add(key);
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.12));
+    const hemi = new THREE.HemisphereLight(0xddeeff, 0x161b22, 1.55);
+    const key = new THREE.DirectionalLight(0xffffff, 1.85);
+    key.position.set(4.5, 6, 5);
+    const fill = new THREE.DirectionalLight(0x7dcfff, 0.58);
+    fill.position.set(-6, 3, -4);
+    const rim = new THREE.DirectionalLight(0xfff1b8, 0.68);
+    rim.position.set(2, -3, -6);
+    this.scene.add(hemi, key, fill, rim);
   }
 
   initHelpers() {
-    this.grid = new THREE.GridHelper(40, 40, 0x5a5a5a, 0x303030);
+    this.grid = new THREE.GridHelper(40, 40, 0x66727c, 0x303941);
     this.grid.position.y = -0.02;
+    this.grid.material.transparent = true;
+    this.grid.material.opacity = 0.42;
     this.scene.add(this.grid);
     this.boundingBoxHelper = new THREE.Box3Helper(new THREE.Box3(), 0xffffff);
     this.boundingBoxHelper.visible = false;
@@ -145,16 +156,43 @@ export class TiamatScene extends EventTarget {
   initPools() {
     this.baseGeometry = new THREE.SphereGeometry(BASE_RADIUS, 18, 12);
     setWhiteVertexColors(this.baseGeometry);
-    this.baseMaterial = new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 1 });
+    this.baseMaterial = new THREE.MeshPhysicalMaterial({
+      vertexColors: true,
+      roughness: 0.38,
+      metalness: 0.02,
+      clearcoat: 0.56,
+      clearcoatRoughness: 0.24
+    });
     this.baseMesh = new THREE.InstancedMesh(this.baseGeometry, this.baseMaterial, 1);
     this.baseMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 
-    this.phosphateGeometry = new THREE.SphereGeometry(PHOSPHATE_RADIUS, 14, 10);
+    this.phosphateGeometry = new THREE.SphereGeometry(PHOSPHATE_RADIUS, 16, 10);
     setWhiteVertexColors(this.phosphateGeometry);
-    this.phosphateMaterial = new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 1, transparent: true, opacity: 0.75, wireframe: true });
+    this.phosphateMaterial = new THREE.MeshPhysicalMaterial({
+      vertexColors: true,
+      roughness: 0.62,
+      metalness: 0.08,
+      transparent: true,
+      opacity: 0.34,
+      depthWrite: false,
+      clearcoat: 0.32,
+      clearcoatRoughness: 0.42
+    });
     this.phosphateMesh = new THREE.InstancedMesh(this.phosphateGeometry, this.phosphateMaterial, 1);
     this.phosphateMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.scene.add(this.phosphateMesh, this.baseMesh);
+    this.selectedHaloGeometry = new THREE.SphereGeometry(BASE_RADIUS * 1.85, 24, 14);
+    setWhiteVertexColors(this.selectedHaloGeometry);
+    this.selectedHaloMaterial = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.22,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+    this.selectedHaloMesh = new THREE.InstancedMesh(this.selectedHaloGeometry, this.selectedHaloMaterial, 1);
+    this.selectedHaloMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.selectedHaloMesh.raycast = () => {};
+    this.scene.add(this.phosphateMesh, this.baseMesh, this.selectedHaloMesh);
 
     this.strandLines = this.makeLines(0x94a8b8);
     this.pairLines = this.makeLines(0xf4d35e);
@@ -195,7 +233,12 @@ export class TiamatScene extends EventTarget {
   }
 
   makeConnectionCylinders(color = 0xffffff) {
-    const material = new THREE.MeshBasicMaterial({ color, vertexColors: true });
+    const material = new THREE.MeshStandardMaterial({
+      color,
+      vertexColors: true,
+      roughness: 0.54,
+      metalness: 0.04
+    });
     const mesh = new THREE.InstancedMesh(this.connectionCylinderGeometry, material, 1);
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.raycast = () => {};
@@ -474,12 +517,23 @@ export class TiamatScene extends EventTarget {
       this.phosphateMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       this.scene.add(this.phosphateMesh);
     }
+    if (this.selectedHaloMesh.instanceMatrix.array.length / 16 < count) {
+      this.scene.remove(this.selectedHaloMesh);
+      this.selectedHaloMesh.dispose?.();
+      this.selectedHaloMesh = new THREE.InstancedMesh(this.selectedHaloGeometry, this.selectedHaloMaterial, count);
+      this.selectedHaloMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      this.selectedHaloMesh.raycast = () => {};
+      this.scene.add(this.selectedHaloMesh);
+    }
 
     const matrix = new THREE.Matrix4();
     const phosphateMatrix = new THREE.Matrix4();
+    const haloMatrix = new THREE.Matrix4();
     const color = new THREE.Color();
     const phosphateColor = new THREE.Color();
+    const haloColor = new THREE.Color();
     this.baseIdByInstance = [];
+    let haloIndex = 0;
     this.model.bases.forEach((base, index) => {
       const selected = this.model.selectedIds.has(base.id);
       const hidden = this.schematic.hiddenIds.has(base.id);
@@ -490,21 +544,34 @@ export class TiamatScene extends EventTarget {
       matrix.compose(baseSitePosition(base), new THREE.Quaternion(), new THREE.Vector3(scale, scale, scale));
       this.baseMesh.setMatrixAt(index, matrix);
       color.set(BASES[base.type]?.color ?? BASES.X.color);
+      color.offsetHSL(0, 0.06, 0.05);
       if (selected) color.lerp(new THREE.Color(0xffffff), 0.28);
       this.baseMesh.setColorAt(index, color);
       phosphateMatrix.compose(phosphatePosition(base), new THREE.Quaternion(), new THREE.Vector3(scale, scale, scale));
       this.phosphateMesh.setMatrixAt(index, phosphateMatrix);
       phosphateColor.set(this.model.displayColor(base));
-      if (selected) phosphateColor.lerp(new THREE.Color(0xffffff), 0.18);
+      phosphateColor.offsetHSL(0, 0.08, 0.02);
+      if (selected) phosphateColor.lerp(new THREE.Color(0xffffff), 0.3);
       this.phosphateMesh.setColorAt(index, phosphateColor);
+      if (selected && !hideDetailedMarker) {
+        haloMatrix.compose(baseSitePosition(base), new THREE.Quaternion(), new THREE.Vector3(1, 1, 1));
+        this.selectedHaloMesh.setMatrixAt(haloIndex, haloMatrix);
+        haloColor.set(BASES[base.type]?.color ?? BASES.X.color);
+        haloColor.lerp(new THREE.Color(0xffffff), 0.36);
+        this.selectedHaloMesh.setColorAt(haloIndex, haloColor);
+        haloIndex += 1;
+      }
       this.baseIdByInstance[index] = base.id;
     });
     this.baseMesh.count = this.model.bases.length;
     this.phosphateMesh.count = this.model.bases.length;
+    this.selectedHaloMesh.count = haloIndex;
     this.baseMesh.instanceMatrix.needsUpdate = true;
     this.phosphateMesh.instanceMatrix.needsUpdate = true;
+    this.selectedHaloMesh.instanceMatrix.needsUpdate = true;
     if (this.baseMesh.instanceColor) this.baseMesh.instanceColor.needsUpdate = true;
     if (this.phosphateMesh.instanceColor) this.phosphateMesh.instanceColor.needsUpdate = true;
+    if (this.selectedHaloMesh.instanceColor) this.selectedHaloMesh.instanceColor.needsUpdate = true;
   }
 
   rebuildLines(signature = this.connectionSignature()) {
@@ -973,7 +1040,7 @@ export class TiamatScene extends EventTarget {
   updateFogForDesign() {
     const { size } = this.designBounds();
     const density = Math.min(0.035, 0.18 / Math.max(3.2, size));
-    this.scene.fog = new THREE.FogExp2(0x404040, density);
+    this.scene.fog = new THREE.FogExp2(FOG_COLOR, density);
   }
 
   onPointerMove(event) {
@@ -1425,6 +1492,7 @@ export class TiamatScene extends EventTarget {
     this.controls.enabled = false;
     this.createStrandGesture = { view, start: point.clone(), end: point.clone() };
     this.updateCreateGuide([point, point]);
+    this.dispatchCreateStrandPreview(this.createStrandGesture);
   }
 
   updateCreateStrand(event) {
@@ -1432,6 +1500,7 @@ export class TiamatScene extends EventTarget {
     if (!point) return;
     this.createStrandGesture.end.copy(this.snapVector(point));
     this.updateCreateGuide([this.createStrandGesture.start, this.createStrandGesture.end]);
+    this.dispatchCreateStrandPreview(this.createStrandGesture);
   }
 
   endCreateStrand() {
@@ -1439,6 +1508,7 @@ export class TiamatScene extends EventTarget {
     this.createStrandGesture = null;
     this.createGuide.visible = false;
     this.controls.enabled = this.mode !== 'selectBox';
+    this.dispatchCreateStrandPreview(null);
     if (gesture.start.distanceTo(gesture.end) <= 0.001) {
       this.requestRender();
       return;
@@ -1447,6 +1517,18 @@ export class TiamatScene extends EventTarget {
       detail: { start: positionFrom(gesture.start), end: positionFrom(gesture.end) }
     }));
     this.requestRender();
+  }
+
+  dispatchCreateStrandPreview(gesture) {
+    this.dispatchEvent(new CustomEvent('create-strand-preview', {
+      detail: gesture
+        ? {
+          start: positionFrom(gesture.start),
+          end: positionFrom(gesture.end),
+          distance: gesture.start.distanceTo(gesture.end)
+        }
+        : null
+    }));
   }
 
   updateCreateGuide(points) {

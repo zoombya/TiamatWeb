@@ -215,6 +215,12 @@ export class TiamatModel extends EventTarget {
     return new Set(this.walkStrand(this.strandHead(base)).map((item) => item.id));
   }
 
+  strandForBase(id = this.activeId) {
+    const base = this.getBase(id);
+    if (!base) return [];
+    return this.walkStrand(this.strandHead(base));
+  }
+
   selectHalfStrand(id = this.activeId, direction = 'down') {
     const ids = this.idsForHalfStrand(id, direction);
     if (!ids.size) return;
@@ -278,16 +284,52 @@ export class TiamatModel extends EventTarget {
     this.emit();
   }
 
-  changeSelectedType(type) {
+  changeSelectedType(type, options = {}) {
     if (!this.selectedIds.size) return;
     this.commit('change type');
     this.selectedBases().forEach((base) => {
       base.type = normalizeBase(type, base.molecule);
       base.preset = base.type !== 'X';
       const across = this.getBase(base.across);
-      if (across && !this.selectedIds.has(across.id)) across.type = complementFor(base);
+      if (options.complementPairs && across && !this.selectedIds.has(across.id)) {
+        across.type = complementFor(base);
+        across.preset = across.type !== 'X';
+      }
     });
     this.emit();
+  }
+
+  selectedStrandSequence(id = this.activeId) {
+    return this.strandForBase(id).map((base) => base.type).join('');
+  }
+
+  setSelectedStrandSequence(sequence, options = {}) {
+    const strand = this.strandForBase(options.id ?? this.activeId);
+    if (!strand.length) return { changed: 0, length: 0 };
+    const molecule = strand[0]?.molecule ?? 'DNA';
+    const clean = cleanSequence(sequence, molecule);
+    if (!clean) return { changed: 0, length: strand.length };
+    const fitted = clean.repeat(Math.ceil(strand.length / clean.length)).slice(0, strand.length);
+    this.commit('set strand sequence');
+    let changed = 0;
+    strand.forEach((base, index) => {
+      const next = normalizeBase(fitted[index], base.molecule);
+      if (base.type !== next) changed += 1;
+      base.type = next;
+      base.preset = base.type !== 'X';
+      if (options.complementPairs) {
+        const paired = this.getBase(base.across);
+        if (paired) {
+          const pairedType = complementFor(base);
+          if (paired.type !== pairedType) changed += 1;
+          paired.type = pairedType;
+          paired.preset = paired.type !== 'X';
+        }
+      }
+    });
+    this.updateGeometryMeasurements();
+    this.emit();
+    return { changed, length: strand.length };
   }
 
   designSequence(options = {}) {

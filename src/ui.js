@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { BASES, CONSTRAINTS, STRAND_COLORS, TIAMAT_GEOMETRY } from './constants.js';
 import { cleanSequence, formatVector } from './geometry.js';
-import { appendImportedDesigns, dnaJson, download, fullProjectJson, mergeImportedDesigns, mergeMetadataFromDna, parseOxDnaTopConf, parseDnaFile, parseJsonProject, parseOxViewProject, parsePdb, parseSequenceText } from './io.js';
+import { appendImportedDesigns, dnaJson, download, fullProjectJson, mergeImportedDesigns, mergeMetadataFromDna, oxViewJson, parseOxDnaTopConf, parseDnaFile, parseJsonProject, parseOxViewProject, parsePdb, parseSequenceText } from './io.js';
 
 const RENDER_SETTINGS_KEY = 'tiamat-web.render-settings.v2';
 
@@ -39,6 +39,7 @@ export function mountApp(root) {
           <label class="buttonLike" for="appendFileInput">Add</label>
           <button data-action="saveProject">Save</button>
           <button data-action="exportDnaJson">DNA JSON</button>
+          <button data-action="exportOxView">oxView</button>
           <button data-action="exportPng">PNG</button>
         </nav>
         <div id="status" class="status">Ready</div>
@@ -72,6 +73,11 @@ export function mountApp(root) {
             <button data-action="clearFreeform">Clear</button>
           </div>
           <textarea id="sequenceInput" aria-label="Sequence" spellcheck="false">ATGCGTACGCTA</textarea>
+          <div class="buttonrow sequenceActions">
+            <button data-action="getSelectedSequence">Get Selected</button>
+            <button data-action="setSelectedSequence">Set Selected</button>
+          </div>
+          <label class="checkline"><input id="sequenceComplementInput" type="checkbox"> Complement paired bases</label>
           <div class="grid2 createPrimary">
             <label>Molecule
               <select id="createMoleculeInput">
@@ -124,12 +130,13 @@ export function mountApp(root) {
           </div>
         </section>
 
-        <details class="panel toolCard" data-context="selected">
+        <details class="panel toolCard" data-context="single-base">
           <summary><h2>Base Identity</h2></summary>
           <div class="basegrid" aria-label="Base type">
             <button data-base="A">A</button><button data-base="T">T</button><button data-base="U">U</button>
             <button data-base="G">G</button><button data-base="C">C</button><button data-base="X">X</button>
           </div>
+          <label class="checkline"><input id="baseComplementInput" type="checkbox"> Complement paired base</label>
         </details>
 
         <details class="panel toolCard">
@@ -302,6 +309,7 @@ export function mountApp(root) {
             <label class="buttonLike" for="appendFileInput">Add</label>
             <button data-action="saveProject">Save</button>
             <button data-action="exportDnaJson">DNA JSON</button>
+            <button data-action="exportOxView">oxView</button>
             <button data-action="exportPng">PNG</button>
           </div>
         </details>
@@ -333,6 +341,8 @@ export class TiamatUI {
     this.freeformControls = [];
     this.freeformStartId = null;
     this.freeformEndId = null;
+    this.createPreview = null;
+    this.lastCreateSummary = null;
     this.importDiagnostics = null;
     this.bind();
     this.restoreRenderSettings();
@@ -349,27 +359,23 @@ export class TiamatUI {
     });
     document.querySelectorAll('[data-molecule]').forEach((button) => {
       button.addEventListener('click', () => {
-        this.molecule = button.dataset.molecule;
-        document.querySelectorAll('[data-molecule]').forEach((b) => b.classList.toggle('selected', b === button));
+        this.setSetupMolecule(button.dataset.molecule);
       });
     });
     document.querySelectorAll('[data-geometry]').forEach((button) => {
       button.addEventListener('click', () => {
-        this.geometry = button.dataset.geometry;
-        document.querySelectorAll('[data-geometry]').forEach((b) => b.classList.toggle('selected', b === button));
-        this.applyGeometryPreset(this.geometry);
+        this.setSetupGeometry(button.dataset.geometry);
       });
     });
     document.querySelector('#createMoleculeInput')?.addEventListener('change', (event) => {
-      const defaults = createModeDefaults(event.target.value);
-      this.molecule = defaults.molecule;
-      this.geometry = defaults.geometry;
-      document.querySelectorAll('[data-molecule]').forEach((b) => b.classList.toggle('selected', b.dataset.molecule === this.molecule));
-      document.querySelectorAll('[data-geometry]').forEach((b) => b.classList.toggle('selected', b.dataset.geometry === this.geometry));
-      this.applyGeometryPreset(this.geometry, false);
+      this.applyCreateMode(event.target.value);
     });
     document.querySelectorAll('[data-base]').forEach((button) => {
-      button.addEventListener('click', () => this.model.changeSelectedType(button.dataset.base));
+      button.addEventListener('click', () => {
+        const complementPairs = document.querySelector('#baseComplementInput')?.checked;
+        this.model.changeSelectedType(button.dataset.base, { complementPairs });
+        this.status(`Base ${button.dataset.base}${complementPairs ? ' with complement' : ''}`);
+      });
     });
     document.querySelectorAll('[data-selection-op]').forEach((button) => {
       button.addEventListener('click', () => {
@@ -455,6 +461,7 @@ export class TiamatUI {
     this.scene.addEventListener('view-change', (event) => this.syncViewButtons(event.detail));
     this.scene.addEventListener('constraint-blocked', () => this.status('Transform blocked by Tiamat constraints'));
     this.scene.addEventListener('transform-progress', (event) => this.updateTransformReadout(event.detail));
+    this.scene.addEventListener('create-strand-preview', (event) => this.updateCreatePreview(event.detail));
     this.scene.addEventListener('add-base', (event) => {
       this.model.commit('add base');
       const base = this.model.createBase({
@@ -500,7 +507,7 @@ export class TiamatUI {
   readCreateOptions() {
     const moleculeMode = document.querySelector('#createMoleculeInput')?.value ?? 'DNADNAB';
     const modeDefaults = createModeDefaults(moleculeMode);
-    const geometry = modeDefaults.geometry;
+    const geometry = ['A', 'B', 'Free'].includes(this.geometry) ? this.geometry : modeDefaults.geometry;
     const preset = TIAMAT_GEOMETRY[geometry] ?? TIAMAT_GEOMETRY.B;
     return {
       baseCount: Number(document.querySelector('#baseCountInput').value) || 0,
@@ -511,7 +518,7 @@ export class TiamatUI {
       twist: Number(document.querySelector('#twistInput').value) || preset.twistDeg,
       initialRotation: THREE.MathUtils.degToRad(Number(document.querySelector('#initialRotInput').value) || 0),
       double: document.querySelector('#doubleInput').checked,
-      molecule: modeDefaults.molecule,
+      molecule: this.molecule || modeDefaults.molecule,
       pairedMolecule: modeDefaults.pairedMolecule,
       geometry
     };
@@ -529,6 +536,8 @@ export class TiamatUI {
     if (action === 'pairAll') this.status(`Created ${this.model.pairAll()} complementary bases`);
     if (action === 'finishFreeform') this.finishFreeform();
     if (action === 'clearFreeform') this.clearFreeform();
+    if (action === 'getSelectedSequence') this.getSelectedSequence();
+    if (action === 'setSelectedSequence') this.setSelectedSequence();
     if (action === 'pairSelected') this.model.pairSelected();
     if (action === 'extendUp') this.model.extendSelected('up');
     if (action === 'extendDown') this.model.extendSelected('down');
@@ -566,6 +575,7 @@ export class TiamatUI {
     if (action === 'clearDesign') this.clearDesign();
     if (action === 'saveProject') download(this.model.fileName, fullProjectJson(this.model, this.scene.viewState()), 'application/json');
     if (action === 'exportDnaJson') download('tiamat-export.dnajson', dnaJson(this.model), 'application/json');
+    if (action === 'exportOxView') download('tiamat-export.oxview', oxViewJson(this.model), 'application/json');
     if (action === 'exportPng') download('tiamat-render.png', dataUrlToBlob(this.scene.exportPng()), 'image/png');
     this.scene.setInteractionMode(this.mode, this.snap());
     this.updateInteractionHint();
@@ -641,6 +651,16 @@ export class TiamatUI {
   syncColorButtons() {
     document.querySelectorAll('[data-color]').forEach((button) => {
       button.classList.toggle('selected', button.dataset.color === this.activeColor);
+    });
+  }
+
+  syncBaseButtons() {
+    const selected = this.model.activeBase();
+    document.querySelectorAll('[data-base]').forEach((button) => {
+      button.classList.toggle('selected', selected?.type === button.dataset.base);
+      button.disabled = selected
+        ? (selected.molecule === 'RNA' ? button.dataset.base === 'T' : button.dataset.base === 'U')
+        : false;
     });
   }
 
@@ -782,7 +802,29 @@ export class TiamatUI {
   createStrandFromGesture({ start, end }) {
     const count = this.model.createStrandBetween(start, end, document.querySelector('#sequenceInput').value, this.readCreateOptions());
     this.status(count ? `Created ${count} base strand` : 'Create strand needs a nonzero drag span');
+    this.createPreview = null;
+    this.lastCreateSummary = count ? `Last drag: ${count} bases` : null;
     this.updateCreateState();
+  }
+
+  getSelectedSequence() {
+    const sequence = this.model.selectedStrandSequence();
+    if (!sequence) {
+      this.status('Select a strand to read its sequence');
+      return;
+    }
+    document.querySelector('#sequenceInput').value = sequence;
+    this.status(`Loaded ${sequence.length} bases from selected strand`);
+    this.updateCreateState();
+  }
+
+  setSelectedSequence() {
+    const result = this.model.setSelectedStrandSequence(document.querySelector('#sequenceInput').value, {
+      complementPairs: document.querySelector('#sequenceComplementInput')?.checked
+    });
+    this.status(result.length
+      ? `Set ${result.length} selected-strand bases${document.querySelector('#sequenceComplementInput')?.checked ? ' with complements' : ''}`
+      : 'Select a strand before setting sequence');
   }
 
   addFreeformPoint({ id, position }) {
@@ -813,6 +855,8 @@ export class TiamatUI {
       endBaseId: this.freeformEndId
     });
     this.clearFreeform(false);
+    if (count) this.lastCreateSummary = `Last spline: ${count} bases`;
+    this.updateCreateState();
     this.status(count ? `Created ${count} freeform bases` : 'Freeform needs at least two control points');
   }
 
@@ -824,17 +868,31 @@ export class TiamatUI {
     if (showStatus) this.status('Freeform cleared');
   }
 
+  updateCreatePreview(detail) {
+    this.createPreview = detail;
+    this.updateCreateState();
+  }
+
   updateCreateState() {
     const target = document.querySelector('#createState');
     this.scene.setFreeformPreview(this.freeformControls);
     if (!target) return;
+    if (this.createPreview) {
+      const distance = Number(this.createPreview.distance) || 0;
+      const options = this.readCreateOptions();
+      const count = estimateDraggedBaseCount(distance, options);
+      target.textContent = distance <= 0.001
+        ? 'Drag to size the strand'
+        : `Drag preview: ${count} bases · ${distance.toFixed(2)} nm`;
+      return;
+    }
     const attachments = [
       this.freeformStartId !== null ? `start #${this.freeformStartId}` : null,
       this.freeformEndId !== null ? `end #${this.freeformEndId}` : null
     ].filter(Boolean).join(' · ');
     target.textContent = this.freeformControls.length
       ? `${this.freeformControls.length} freeform control points${attachments ? ` · ${attachments}` : ''}`
-      : 'Create mode idle';
+      : this.lastCreateSummary ?? 'Create mode idle';
   }
 
   colorActiveStrand() {
@@ -981,17 +1039,58 @@ export class TiamatUI {
 
   applyGeometryPreset(geometry, syncCreateMode = true) {
     const preset = TIAMAT_GEOMETRY[geometry];
-    if (!preset) return;
-    document.querySelector('#riseInput').value = String(preset.rise);
-    document.querySelector('#radiusInput').value = String(preset.radius);
-    document.querySelector('#twistInput').value = String(preset.twistDeg);
-    if (syncCreateMode) {
-      const mode = geometry === 'A'
-        ? (this.molecule === 'RNA' ? 'RNARNA' : 'DNADNAA')
-        : 'DNADNAB';
-      const createMode = document.querySelector('#createMoleculeInput');
-      if (createMode) createMode.value = mode;
+    if (preset) {
+      document.querySelector('#riseInput').value = String(preset.rise);
+      document.querySelector('#radiusInput').value = String(preset.radius);
+      document.querySelector('#twistInput').value = String(preset.twistDeg);
     }
+    if (syncCreateMode) {
+      this.syncCreateModeFromSetup();
+    }
+  }
+
+  applyCreateMode(mode) {
+    const defaults = createModeDefaults(mode);
+    this.molecule = defaults.molecule;
+    this.geometry = defaults.geometry;
+    this.syncSetupButtons();
+    this.applyGeometryPreset(this.geometry, false);
+    this.updateCreateState();
+  }
+
+  setSetupMolecule(molecule) {
+    this.molecule = molecule === 'RNA' ? 'RNA' : 'DNA';
+    this.syncSetupButtons();
+    this.syncCreateModeFromSetup();
+    this.updateCreateState();
+    this.status(`${this.molecule} creation`);
+  }
+
+  setSetupGeometry(geometry) {
+    this.geometry = ['A', 'B', 'Free'].includes(geometry) ? geometry : 'B';
+    this.syncSetupButtons();
+    this.applyGeometryPreset(this.geometry);
+    this.updateCreateState();
+    this.status(`${this.geometry}-form creation`);
+  }
+
+  syncSetupButtons() {
+    document.querySelectorAll('[data-molecule]').forEach((button) => {
+      button.classList.toggle('selected', button.dataset.molecule === this.molecule);
+    });
+    document.querySelectorAll('[data-geometry]').forEach((button) => {
+      button.classList.toggle('selected', button.dataset.geometry === this.geometry);
+    });
+  }
+
+  syncCreateModeFromSetup() {
+    const createMode = document.querySelector('#createMoleculeInput');
+    if (!createMode) return;
+    if (this.molecule === 'RNA') {
+      createMode.value = 'RNARNA';
+      return;
+    }
+    createMode.value = this.geometry === 'A' ? 'DNADNAA' : 'DNADNAB';
   }
 
   update() {
@@ -1008,6 +1107,7 @@ export class TiamatUI {
     this.updateImportDiagnostics();
     this.syncModeButtons();
     this.syncSelectionOperationButtons();
+    this.syncBaseButtons();
     this.syncColorButtons();
     this.syncViewButtons();
     document.querySelector('#strandList').innerHTML = strands.map((strand, index) => {
@@ -1031,6 +1131,10 @@ export class TiamatUI {
     document.querySelectorAll('[data-context="selected"]').forEach((panel) => {
       panel.hidden = selectedCount === 0;
       if (panel instanceof HTMLDetailsElement) panel.open = selectedCount > 0;
+    });
+    document.querySelectorAll('[data-context="single-base"]').forEach((panel) => {
+      panel.hidden = selectedCount !== 1;
+      if (panel instanceof HTMLDetailsElement) panel.open = selectedCount === 1;
     });
     document.querySelectorAll('[data-context="selection-tools"]').forEach((panel) => {
       panel.hidden = selectedCount === 0;
@@ -1240,4 +1344,10 @@ function randomSequence(length, molecule = 'DNA') {
     output += alphabet[Math.floor(Math.random() * alphabet.length)];
   }
   return output;
+}
+
+function estimateDraggedBaseCount(distance, options) {
+  const explicit = Math.max(0, Math.floor(Number(options.baseCount) || 0));
+  if (explicit) return explicit;
+  return Math.max(1, Math.ceil(distance / Math.max(0.0001, Number(options.rise) || 0.332)));
 }
