@@ -5,7 +5,11 @@ import { cleanSequence, normalizeBase, vectorFrom } from './geometry.js';
 export { parseDnaFile } from './dna-loader.js';
 
 const OXVIEW_NM_PER_UNIT = 0.8518;
-const OXVIEW_NS_CENTER_A1 = 0.34;
+const OXDNA_STACKING_SITE_A1 = 0.34;
+const OXDNA_BACKBONE_SITE_A1 = -OXDNA_STACKING_SITE_A1;
+const OXDNA_BACKBONE_SITE_A2 = 0.3408;
+const OXRNA_BACKBONE_SITE_A1 = -0.4;
+const OXRNA_BACKBONE_SITE_A3 = 0.2;
 
 /**
  * Merge metadata from a corrupted .dna parse into oxDNA-sourced bases.
@@ -359,12 +363,26 @@ function generateShapePreservingOxStrandFrames(strand, frames, byId, transform) 
 
 function generateDnaJsonOxViewFrames(strand, frames, byId, transform) {
   strand.forEach((base) => {
-    const ns = vectorFrom(base.position).sub(transform.center).multiplyScalar(transform.scale);
+    const backboneSite = vectorFrom(base.position).sub(transform.center).multiplyScalar(transform.scale);
     const a3 = oxViewA3Vector(base, byId);
     const a1 = oxViewA1Vector(base, byId, a3);
-    const p = ns.sub(a1.clone().multiplyScalar(OXVIEW_NS_CENTER_A1));
+    const p = oxViewCenterFromBackbone(backboneSite, a1, a3, base.molecule);
     frames.set(base.id, { p, a1, a3 });
   });
+}
+
+function oxViewCenterFromBackbone(backboneSite, a1, a3, molecule) {
+  if (molecule === 'RNA') {
+    return backboneSite
+      .clone()
+      .sub(a1.clone().multiplyScalar(OXRNA_BACKBONE_SITE_A1))
+      .sub(a3.clone().multiplyScalar(OXRNA_BACKBONE_SITE_A3));
+  }
+  const a2 = oxViewA2Vector(a1, a3);
+  return backboneSite
+    .clone()
+    .sub(a1.clone().multiplyScalar(OXDNA_BACKBONE_SITE_A1))
+    .sub(a2.clone().multiplyScalar(OXDNA_BACKBONE_SITE_A2));
 }
 
 function oxViewScenePosition(base) {
@@ -381,6 +399,8 @@ function oxViewScenePosition(base) {
 function oxViewA3Vector(base, byId) {
   const imported = vectorFrom(base.oxView?.a3);
   if (imported.lengthSq() > 0.000001) return imported.normalize();
+  const pairedAxis = oxViewPairCenterAxis(base, byId);
+  if (pairedAxis) return pairedAxis;
   const up = byId.get(base.up);
   const down = byId.get(base.down);
   const here = vectorFrom(base.position);
@@ -394,11 +414,34 @@ function oxViewA3Vector(base, byId) {
   return vector;
 }
 
+function oxViewPairCenterAxis(base, byId) {
+  const up = byId.get(base.up);
+  const down = byId.get(base.down);
+  const here = oxViewPairCenter(base, byId);
+  const upCenter = up ? oxViewPairCenter(up, byId) : null;
+  const downCenter = down ? oxViewPairCenter(down, byId) : null;
+  let direction = null;
+  if (upCenter && downCenter) direction = downCenter.sub(upCenter);
+  else if (downCenter) direction = downCenter.sub(here);
+  else if (upCenter) direction = here.sub(upCenter);
+  if (!direction || direction.lengthSq() <= 0.000001) return null;
+  return direction.normalize();
+}
+
+function oxViewPairCenter(base, byId) {
+  const here = vectorFrom(base.position);
+  const across = byId.get(base.across);
+  if (!across) return here;
+  return here.add(vectorFrom(across.position)).multiplyScalar(0.5);
+}
+
 function oxViewA1Vector(base, byId, a3) {
   const here = vectorFrom(base.position);
   const across = byId.get(base.across);
   let vector = vectorFrom(base.oxView?.a1);
-  if (vector.lengthSq() <= 0.000001 && across) vector = vectorFrom(across.position).sub(here);
+  if (vector.lengthSq() <= 0.000001 && across) {
+    vector = vectorFrom(across.position).sub(here);
+  }
   const axis = a3.clone().normalize();
   if (vector.lengthSq() > 0.000001) vector.sub(axis.clone().multiplyScalar(vector.dot(axis)));
   if (!vector || vector.lengthSq() <= 0.000001) {
@@ -409,6 +452,12 @@ function oxViewA1Vector(base, byId, a3) {
   }
   vector.normalize();
   return vector;
+}
+
+function oxViewA2Vector(a1, a3) {
+  const vector = a1.clone().cross(a3).multiplyScalar(-1);
+  if (vector.lengthSq() <= 0.000001) return new THREE.Vector3(0, 1, 0);
+  return vector.normalize();
 }
 
 function oxViewBox(points) {

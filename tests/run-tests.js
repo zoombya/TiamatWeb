@@ -9,6 +9,7 @@ import { ScreenSelectionIndex } from '../src/selection-index.js';
 import { isSchematicRunNeighbor } from '../src/scene.js';
 
 const OXVIEW_FIXTURE = '/Users/m.matthies/Data/Dietz_Designs/oxview/42hb_v40_polyT.oxview';
+const DEFAULT_TETRAHEDRON = './public/defaults/tetrahedron.dna';
 const TIAMAT_DNA_FIXTURES = [
   {
     path: '/Users/m.matthies/Downloads/7z2600-mac/Tiamat design/Figure 4/[PT]_Cairo_p7249_core+edge.dna',
@@ -452,12 +453,26 @@ test('oxView export is generated from DNA JSON fields and oxView nucleoside tran
   const second = oxview.systems[0].strands[0].monomers[1];
   const a1 = new THREE.Vector3(...first.a1);
   const a3 = new THREE.Vector3(...first.a3);
-  const expectedSiteDistance = positionVector(model.bases[0].position)
+  const exportedBackbone = oxViewBackboneSite(first);
+  const expectedBackboneDistance = positionVector(model.bases[0].position)
     .distanceTo(positionVector(model.bases[2].position)) / 0.8518;
+  const pairCenter = positionVector(model.bases[0].position)
+    .add(positionVector(model.bases[1].position))
+    .multiplyScalar(0.5 / 0.8518);
+  const nextPairCenter = positionVector(model.bases[2].position)
+    .add(positionVector(model.bases[3].position))
+    .multiplyScalar(0.5 / 0.8518);
   assert.ok(new THREE.Vector3(...first.p).length() < 5);
   assert.ok(Math.abs(a1.dot(a3)) < 0.00001);
-  assert.ok(Math.abs(oxViewNucleosideSite(first).distanceTo(oxViewNucleosideSite(second)) - expectedSiteDistance) < 0.00001);
+  assert.ok(Math.abs(exportedBackbone.distanceTo(oxViewBackboneSite(second)) - expectedBackboneDistance) < 0.00001);
+  assert.ok(a3.dot(nextPairCenter.sub(pairCenter).normalize()) > 0.98);
   const paired = oxview.systems[0].strands.flatMap((strand) => strand.monomers).find((monomer) => monomer.id === first.bp);
+  const pairedBackbone = oxViewBackboneSite(paired);
+  const interfaceDirection = pairedBackbone.clone().sub(exportedBackbone);
+  interfaceDirection.sub(a3.clone().multiplyScalar(interfaceDirection.dot(a3))).normalize();
+  assert.ok(a1.dot(interfaceDirection) > 0.98);
+  assert.ok(oxViewBackboneSite(first).distanceTo(exportedBackbone) < 0.000001);
+  assert.ok(oxViewNucleosideSite(first).distanceTo(oxViewNucleosideSite(paired)) < exportedBackbone.distanceTo(pairedBackbone));
   assert.equal(paired.bp, first.id);
   assert.equal(first.cluster, 0);
   assert.equal(typeof first.color, 'number');
@@ -465,6 +480,16 @@ test('oxView export is generated from DNA JSON fields and oxView nucleoside tran
 
 function oxViewNucleosideSite(monomer) {
   return new THREE.Vector3(...monomer.p).add(new THREE.Vector3(...monomer.a1).multiplyScalar(0.34));
+}
+
+function oxViewBackboneSite(monomer) {
+  const p = new THREE.Vector3(...monomer.p);
+  const a1 = new THREE.Vector3(...monomer.a1);
+  const a3 = new THREE.Vector3(...monomer.a3);
+  const a2 = a1.clone().cross(a3).multiplyScalar(-1).normalize();
+  return p
+    .add(a1.multiplyScalar(-0.34))
+    .add(a2.multiplyScalar(0.3408));
 }
 
 function positionVector(position) {
@@ -517,6 +542,15 @@ test('raw Tiamat .dna fixtures import through MFC object graph with strand color
     ]);
     assert.equal(data.bases.filter((base) => base.useStrandColor).length, fixture.bases);
   });
+});
+
+test('bundled tetrahedron startup scene parses as a valid Tiamat design', () => {
+  if (!existsSync(DEFAULT_TETRAHEDRON)) return 'skipped: startup fixture not found';
+  const buffer = readFileSync(DEFAULT_TETRAHEDRON);
+  const data = parseDnaFile(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  assert.ok(data.bases.length > 0);
+  assert.ok(data.diagnostics.importedBases > 0);
+  assert.equal(data.diagnostics.format.startsWith('Tiamat .dna'), true);
 });
 
 test('schema 5 Tiamat .dna fixtures import RNA-aware object graph without strand-color regressions', () => {
