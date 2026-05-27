@@ -34,6 +34,8 @@ export class TiamatScene extends EventTarget {
     this.createStrandGesture = null;
     this.renderRequested = false;
     this.transformTool = 'off';
+    this.transformAxisMode = 'world';
+    this.transformBasis = worldBasis();
     this.manipulationGesture = null;
     this.hoveredTransformHandle = null;
     this.hoveredTransformViewId = null;
@@ -249,6 +251,13 @@ export class TiamatScene extends EventTarget {
     this.requestRender();
   }
 
+  setTransformAxisMode(mode) {
+    this.transformAxisMode = mode === 'principal' ? 'principal' : 'world';
+    this.updateTransformControl();
+    this.dispatchEvent(new CustomEvent('transform-progress', { detail: this.transformStatusDetail() }));
+    this.requestRender();
+  }
+
   setRenderVisibility(option, value) {
     if (option === 'grid') {
       this.grid.visible = Boolean(value);
@@ -359,6 +368,7 @@ export class TiamatScene extends EventTarget {
     this.resize();
     this.cameraRevision += 1;
     this.invalidateSelectionIndexes();
+    this.dispatchViewChange();
     this.requestRender();
   }
 
@@ -370,6 +380,7 @@ export class TiamatScene extends EventTarget {
     const view = this.viewAtEvent(event);
     if (!view) return;
     this.activeView = view.id;
+    this.dispatchViewChange();
     const hit = this.hitBase(event, view);
     if (hit !== null) {
       this.zoomToBase(hit, view);
@@ -429,8 +440,12 @@ export class TiamatScene extends EventTarget {
     if (!visible) return;
     const center = this.model.selectedCenter();
     const scale = THREE.MathUtils.clamp(this.designBounds().size * 0.04, 0.55, 4);
+    this.transformBasis = this.transformAxisMode === 'principal'
+      ? principalBasis(this.model.selectedBases())
+      : worldBasis();
     this.transformGizmo.position.copy(center);
     this.transformGizmo.scale.setScalar(scale);
+    this.transformGizmo.quaternion.copy(quaternionFromBasis(this.transformBasis));
     this.transformGizmo.children.forEach((child) => {
       child.visible = child.userData.tool === this.transformTool;
     });
@@ -951,6 +966,7 @@ export class TiamatScene extends EventTarget {
       });
     }
     this.updateOrthographicCameras();
+    this.dispatchViewChange();
     this.requestRender();
   }
 
@@ -992,6 +1008,7 @@ export class TiamatScene extends EventTarget {
     const view = this.viewAtEvent(event);
     if (!view) return;
     this.activeView = view.id;
+    this.dispatchViewChange();
     if (this.transformTool !== 'off' && this.model.selectedIds.size > 0 && event.button === 0) {
       const handle = this.hitTransformGizmo(event, view) ?? this.hoveredTransformHandleFor(view);
       if (this.transformTool === 'rotate' && !handle) {
@@ -1128,8 +1145,10 @@ export class TiamatScene extends EventTarget {
       lastAxisDistance: 0,
       lastAcceptedPositions: this.selectedPositionSnapshot(),
       baselineViolations: this.selectedConstraintViolationCount(),
+      totalDelta: new THREE.Vector3(),
+      totalAngle: 0,
       rotationAxis: this.transformTool === 'rotate'
-        ? (handle?.axis ? axisVector(handle.axis) : this.viewNormal(view.id).normalize())
+        ? (handle?.axis ? this.axisVector(handle.axis) : this.viewNormal(view.id).normalize())
         : null
     };
     if (this.transformTool === 'rotate') {
@@ -1145,13 +1164,15 @@ export class TiamatScene extends EventTarget {
         const distance = this.axisDragDistance(event, gesture);
         const deltaDistance = distance - gesture.lastAxisDistance;
         if (Math.abs(deltaDistance) <= 0.000001) return;
-        const delta = axisVector(gesture.handle.axis).multiplyScalar(deltaDistance);
+        const delta = this.axisVector(gesture.handle.axis).multiplyScalar(deltaDistance);
         this.model.selectedBases().forEach((base) => {
           base.position = positionFrom(vectorFrom(base.position).add(delta));
         });
         this.model.updateGeometryMeasurements();
         if (!this.acceptManipulationStep(gesture)) return;
         gesture.lastAxisDistance = distance;
+        gesture.totalDelta.add(delta);
+        this.dispatchTransformProgress(gesture);
         this.renderModel();
         return;
       }
@@ -1165,6 +1186,8 @@ export class TiamatScene extends EventTarget {
         this.model.updateGeometryMeasurements();
         if (!this.acceptManipulationStep(gesture)) return;
         gesture.lastPoint.copy(point);
+        gesture.totalDelta.add(delta);
+        this.dispatchTransformProgress(gesture);
         this.renderModel();
       }
       return;
@@ -1181,6 +1204,8 @@ export class TiamatScene extends EventTarget {
     this.model.updateGeometryMeasurements();
     if (!this.acceptManipulationStep(gesture)) return;
     gesture.lastAngle = angle;
+    gesture.totalAngle += delta;
+    this.dispatchTransformProgress(gesture);
     this.renderModel();
   }
 
@@ -1221,12 +1246,14 @@ export class TiamatScene extends EventTarget {
   }
 
   endManipulation() {
+    const detail = this.manipulationGesture ? this.transformStatusDetail(this.manipulationGesture) : this.transformStatusDetail();
     this.manipulationGesture = null;
     this.activeTransformHandle = null;
     this.updateGizmoHighlight();
     this.controls.enabled = this.mode !== 'selectBox';
     this.model.updateGeometryMeasurements();
     this.model.emit();
+    this.dispatchEvent(new CustomEvent('transform-progress', { detail }));
   }
 
   pointOnManipulationPlane(event, view, center) {
@@ -1289,7 +1316,7 @@ export class TiamatScene extends EventTarget {
   }
 
   axisDragDistance(event, gesture) {
-    const axis = axisVector(gesture.handle.axis);
+    const axis = this.axisVector(gesture.handle.axis);
     const start = gesture.center.clone().project(gesture.view.camera);
     const end = gesture.center.clone().add(axis).project(gesture.view.camera);
     const axisPixels = new THREE.Vector2(
@@ -1302,6 +1329,39 @@ export class TiamatScene extends EventTarget {
     const dx = event.clientX - gesture.startX;
     const dy = event.clientY - gesture.startY;
     return new THREE.Vector2(dx, dy).dot(axisPixels) / pixelsPerUnit;
+  }
+
+  axisVector(axis) {
+    if (axis === 'x') return this.transformBasis.x.clone();
+    if (axis === 'y') return this.transformBasis.y.clone();
+    return this.transformBasis.z.clone();
+  }
+
+  dispatchTransformProgress(gesture) {
+    this.dispatchEvent(new CustomEvent('transform-progress', { detail: this.transformStatusDetail(gesture) }));
+  }
+
+  transformStatusDetail(gesture = null) {
+    const delta = gesture?.totalDelta ?? new THREE.Vector3();
+    return {
+      tool: gesture?.tool ?? this.transformTool,
+      axisMode: this.transformAxisMode,
+      axis: gesture?.handle?.axis ?? null,
+      dx: delta.x,
+      dy: delta.y,
+      dz: delta.z,
+      distance: delta.length(),
+      angleDeg: THREE.MathUtils.radToDeg(gesture?.totalAngle ?? 0)
+    };
+  }
+
+  dispatchViewChange() {
+    this.dispatchEvent(new CustomEvent('view-change', {
+      detail: {
+        mode: this.viewMode,
+        activeView: this.activeView
+      }
+    }));
   }
 
   rotationDragAngle(event, gesture) {
@@ -1667,6 +1727,80 @@ function makeRect(id, label, camera, col, row, cellWidth, cellHeight, width, hei
   };
 }
 
+function worldBasis() {
+  return {
+    x: new THREE.Vector3(1, 0, 0),
+    y: new THREE.Vector3(0, 1, 0),
+    z: new THREE.Vector3(0, 0, 1)
+  };
+}
+
+function quaternionFromBasis(basis) {
+  const matrix = new THREE.Matrix4().makeBasis(basis.x, basis.y, basis.z);
+  return new THREE.Quaternion().setFromRotationMatrix(matrix);
+}
+
+function principalBasis(bases) {
+  if (!bases || bases.length < 2) return worldBasis();
+  const points = bases.map((base) => vectorFrom(base.position));
+  const center = points.reduce((sum, point) => sum.add(point), new THREE.Vector3()).multiplyScalar(1 / points.length);
+  const covariance = covarianceMatrix(points, center);
+  const x = dominantEigenVector(covariance, new THREE.Vector3(1, 0.31, 0.17));
+  const deflated = deflateMatrix(covariance, x, matrixVectorDot(covariance, x).dot(x));
+  let y = dominantEigenVector(deflated, new THREE.Vector3(-0.23, 1, 0.41));
+  y.sub(x.clone().multiplyScalar(y.dot(x)));
+  if (y.lengthSq() < 0.000001) y = perpendicularVector(x);
+  y.normalize();
+  const z = new THREE.Vector3().crossVectors(x, y).normalize();
+  y = new THREE.Vector3().crossVectors(z, x).normalize();
+  return { x, y, z };
+}
+
+function covarianceMatrix(points, center) {
+  const matrix = [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0]
+  ];
+  points.forEach((point) => {
+    const v = point.clone().sub(center);
+    matrix[0][0] += v.x * v.x; matrix[0][1] += v.x * v.y; matrix[0][2] += v.x * v.z;
+    matrix[1][0] += v.y * v.x; matrix[1][1] += v.y * v.y; matrix[1][2] += v.y * v.z;
+    matrix[2][0] += v.z * v.x; matrix[2][1] += v.z * v.y; matrix[2][2] += v.z * v.z;
+  });
+  return matrix.map((row) => row.map((value) => value / Math.max(1, points.length)));
+}
+
+function dominantEigenVector(matrix, seed) {
+  let vector = seed.clone().normalize();
+  for (let i = 0; i < 16; i += 1) {
+    const next = matrixVectorDot(matrix, vector);
+    if (next.lengthSq() < 0.000001) return perpendicularVector(seed).normalize();
+    vector = next.normalize();
+  }
+  return vector;
+}
+
+function matrixVectorDot(matrix, vector) {
+  return new THREE.Vector3(
+    matrix[0][0] * vector.x + matrix[0][1] * vector.y + matrix[0][2] * vector.z,
+    matrix[1][0] * vector.x + matrix[1][1] * vector.y + matrix[1][2] * vector.z,
+    matrix[2][0] * vector.x + matrix[2][1] * vector.y + matrix[2][2] * vector.z
+  );
+}
+
+function deflateMatrix(matrix, vector, value) {
+  const v = vector.clone().normalize();
+  return matrix.map((row, r) => row.map((item, c) => item - value * v.getComponent(r) * v.getComponent(c)));
+}
+
+function perpendicularVector(vector) {
+  const axis = Math.abs(vector.dot(new THREE.Vector3(1, 0, 0))) < 0.9
+    ? new THREE.Vector3(1, 0, 0)
+    : new THREE.Vector3(0, 1, 0);
+  return axis.sub(vector.clone().multiplyScalar(axis.dot(vector))).normalize();
+}
+
 function makeTransformGizmo() {
   const group = new THREE.Group();
   group.name = 'Selection transform gizmo';
@@ -1723,12 +1857,6 @@ function orientAxisObject(object, axis) {
 function orientRingObject(object, axis) {
   if (axis === 'x') object.rotation.y = Math.PI / 2;
   if (axis === 'y') object.rotation.x = Math.PI / 2;
-}
-
-function axisVector(axis) {
-  if (axis === 'x') return new THREE.Vector3(1, 0, 0);
-  if (axis === 'y') return new THREE.Vector3(0, 1, 0);
-  return new THREE.Vector3(0, 0, 1);
 }
 
 function gestureInitRotation(gesture) {

@@ -6,9 +6,7 @@ export { parseDnaFile } from './dna-loader.js';
 
 const OXVIEW_NM_PER_UNIT = 0.8518;
 const OXDNA_BASE_BASE = 0.3897628551303122;
-const OXDNA_CM_CENTER_DS = 0.6;
-const OXDNA_COMPLEMENT_CM_SEPARATION = 1.2;
-const OXDNA_HELICAL_TWIST_RAD = THREE.MathUtils.degToRad(35.9);
+const OXVIEW_NS_CENTER_A1 = 0.34;
 
 /**
  * Merge metadata from a corrupted .dna parse into oxDNA-sourced bases.
@@ -172,16 +170,20 @@ export function fullProjectJson(model, view = null) {
 
 export function dnaJson(model) {
   return JSON.stringify({
-    bases: model.bases.map((base) => ({
-      id: base.id,
-      position: [base.position.x, base.position.y, base.position.z],
-      molecule: base.molecule,
-      type: BASES[base.type].name,
-      across: base.across,
-      up: base.up,
-      down: base.down
-    }))
+    bases: dnaJsonRecords(model)
   }, null, 2);
+}
+
+function dnaJsonRecords(model) {
+  return model.bases.map((base) => ({
+    id: base.id,
+    position: [base.position.x, base.position.y, base.position.z],
+    molecule: base.molecule,
+    type: BASES[base.type].name,
+    across: base.across,
+    up: base.up,
+    down: base.down
+  }));
 }
 
 export function sequenceText(model) {
@@ -209,14 +211,15 @@ export function pdbText(model) {
 }
 
 export function oxViewJson(model) {
-  const strands = model.strands();
+  const colorById = new Map(model.bases.map((base) => [base.id, colorToDecimal(model.displayColor(base))]));
+  const dnaBases = dnaJsonRecords(model).map(dnaJsonRecordToOxBase);
+  const strands = dnaJsonStrands(dnaBases);
   const bases = strands.flat();
   const idToOxId = new Map(bases.map((base, index) => [base.id, index]));
-  const byId = new Map(model.bases.map((base) => [base.id, base]));
-  const frames = buildOxViewFrames(strands, byId);
-  const box = oxViewBox([...frames.values()].map((frame) => frame.p));
+  const byId = new Map(dnaBases.map((base) => [base.id, base]));
+  const frames = buildDnaJsonOxViewFrames(strands, byId);
   const oxStrands = strands.map((strand, strandIndex) => {
-    const monomers = strand.map((base) => oxViewMonomer(base, byId, idToOxId, model, frames.get(base.id)));
+    const monomers = strand.map((base) => oxViewMonomer(base, byId, idToOxId, colorById, frames.get(base.id)));
     return {
       id: strandIndex,
       end3: idToOxId.get(strand.at(-1)?.id) ?? monomers.at(-1)?.id ?? -1,
@@ -228,7 +231,7 @@ export function oxViewJson(model) {
 
   return JSON.stringify({
     date: new Date().toISOString(),
-    box,
+    box: oxViewBox([...frames.values()].map((frame) => frame.p)),
     systems: [{
       id: 0,
       strands: oxStrands
@@ -236,7 +239,47 @@ export function oxViewJson(model) {
   }, null, 2);
 }
 
-function oxViewMonomer(base, byId, idToOxId, model, frame = oxViewFrame(base, byId)) {
+function dnaJsonRecordToOxBase(record) {
+  return {
+    id: Number(record.id),
+    position: arrayToPosition(record.position ?? [0, 0, 0]),
+    molecule: record.molecule === 'RNA' ? 'RNA' : 'DNA',
+    type: normalizeImportedType(record.type),
+    across: record.across ?? null,
+    up: record.up ?? null,
+    down: record.down ?? null
+  };
+}
+
+function dnaJsonStrands(bases) {
+  const byId = new Map(bases.map((base) => [base.id, base]));
+  const visited = new Set();
+  const strands = [];
+  const heads = bases.filter((base) => base.up === null || !byId.has(base.up)).sort((a, b) => a.id - b.id);
+  heads.forEach((head) => {
+    const strand = walkDnaJsonStrand(head, byId, visited);
+    if (strand.length) strands.push(strand);
+  });
+  bases.sort((a, b) => a.id - b.id).forEach((base) => {
+    if (visited.has(base.id)) return;
+    const strand = walkDnaJsonStrand(base, byId, visited);
+    if (strand.length) strands.push(strand);
+  });
+  return strands;
+}
+
+function walkDnaJsonStrand(start, byId, visited) {
+  const strand = [];
+  let current = start;
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    strand.push(current);
+    current = current.down !== null && current.down !== undefined ? byId.get(current.down) : null;
+  }
+  return strand;
+}
+
+function oxViewMonomer(base, byId, idToOxId, colorById = null, frame = oxViewFrame(base, byId)) {
   const monomer = {
     id: idToOxId.get(base.id),
     type: base.type === 'X' ? 'A' : base.type,
@@ -251,7 +294,7 @@ function oxViewMonomer(base, byId, idToOxId, model, frame = oxViewFrame(base, by
   if (n5 !== undefined) monomer.n5 = n5;
   if (n3 !== undefined) monomer.n3 = n3;
   if (bp !== undefined) monomer.bp = bp;
-  const color = colorToDecimal(model.displayColor(base));
+  const color = colorById?.get(base.id) ?? null;
   if (color !== null) monomer.color = color;
   return monomer;
 }
@@ -265,29 +308,27 @@ function oxViewFrame(base, byId) {
 
 function buildOxViewFrames(strands, byId) {
   const frames = new Map();
-  const strandGap = 3.2;
-  let layoutIndex = 0;
-
   strands.forEach((strand) => {
     strand.forEach((base) => {
       if (hasImportedOxFrame(base)) frames.set(base.id, oxViewFrame(base, byId));
     });
   });
 
+  const fallbackBases = strands.flat().filter((base) => !frames.has(base.id));
+  const fallbackTransform = oxDnaShapeTransform(fallbackBases, byId);
   strands.forEach((strand) => {
     if (!strand.length || strand.every((base) => frames.has(base.id))) return;
-    const origin = new THREE.Vector3(layoutIndex * strandGap, 0, 0);
-    layoutIndex += 1;
-    generateCanonicalOxStrandFrames(strand, origin, frames, byId);
+    generateShapePreservingOxStrandFrames(strand, frames, byId, fallbackTransform);
   });
 
-  strands.forEach((strand) => {
-    if (!strand.length || strand.every((base) => frames.has(base.id))) return;
-    const origin = new THREE.Vector3(layoutIndex * strandGap, 0, 0);
-    layoutIndex += 1;
-    generateCanonicalOxStrandFrames(strand, origin, frames, byId);
-  });
+  return frames;
+}
 
+function buildDnaJsonOxViewFrames(strands, byId) {
+  const frames = new Map();
+  const bases = strands.flat();
+  const transform = oxDnaShapeTransform(bases, byId);
+  strands.forEach((strand) => generateDnaJsonOxViewFrames(strand, frames, byId, transform));
   return frames;
 }
 
@@ -295,32 +336,44 @@ function hasImportedOxFrame(base) {
   return base?.oxView && Array.isArray(base.oxView.a1) && Array.isArray(base.oxView.a3);
 }
 
-function generateCanonicalOxStrandFrames(strand, origin, frames, byId) {
-  const axis = new THREE.Vector3(0, 0, 1);
-  const firstA1 = new THREE.Vector3(1, 0, 0);
-  const rotation = new THREE.Quaternion();
+function oxDnaShapeTransform(bases, byId) {
+  if (!bases.length) return { center: new THREE.Vector3(), scale: 1 };
+  const center = bases
+    .reduce((sum, base) => sum.add(vectorFrom(base.position)), new THREE.Vector3())
+    .multiplyScalar(1 / bases.length);
+  const distances = bases
+    .map((base) => {
+      const down = byId.get(base.down);
+      if (!down) return null;
+      return vectorFrom(base.position).distanceTo(vectorFrom(down.position));
+    })
+    .filter((value) => Number.isFinite(value) && value > 0.000001)
+    .sort((a, b) => a - b);
+  const median = distances[Math.floor(distances.length / 2)] ?? 0;
+  return {
+    center,
+    scale: median > 0 ? OXDNA_BASE_BASE / median : 1 / OXVIEW_NM_PER_UNIT
+  };
+}
 
-  strand.forEach((base, index) => {
+function generateShapePreservingOxStrandFrames(strand, frames, byId, transform) {
+  strand.forEach((base) => {
     if (frames.has(base.id)) return;
-    rotation.setFromAxisAngle(axis, index * OXDNA_HELICAL_TWIST_RAD);
-    const a1 = firstA1.clone().applyQuaternion(rotation).normalize();
-    const a3 = axis.clone();
-    const rb = origin.clone().addScaledVector(axis, index * OXDNA_BASE_BASE);
-    const p = rb.sub(a1.clone().multiplyScalar(OXDNA_CM_CENTER_DS));
+    const p = vectorFrom(base.position).sub(transform.center).multiplyScalar(transform.scale);
+    const a3 = oxViewA3Vector(base, byId);
+    const a1 = oxViewA1Vector(base, byId, a3);
     frames.set(base.id, { p, a1, a3 });
-
-    const pair = byId.get(base.across);
-    if (pair && !frames.has(pair.id) && !hasImportedOxFrame(pair)) {
-      frames.set(pair.id, complementOxFrame(frames.get(base.id)));
-    }
   });
 }
 
-function complementOxFrame(frame) {
-  const a1 = frame.a1.clone().multiplyScalar(-1);
-  const a3 = frame.a3.clone().multiplyScalar(-1);
-  const p = frame.p.clone().sub(a1.clone().multiplyScalar(OXDNA_COMPLEMENT_CM_SEPARATION));
-  return { p, a1, a3 };
+function generateDnaJsonOxViewFrames(strand, frames, byId, transform) {
+  strand.forEach((base) => {
+    const ns = vectorFrom(base.position).sub(transform.center).multiplyScalar(transform.scale);
+    const a3 = oxViewA3Vector(base, byId);
+    const a1 = oxViewA1Vector(base, byId, a3);
+    const p = ns.sub(a1.clone().multiplyScalar(OXVIEW_NS_CENTER_A1));
+    frames.set(base.id, { p, a1, a3 });
+  });
 }
 
 function oxViewScenePosition(base) {
@@ -422,6 +475,12 @@ export function parseJsonProject(text) {
   const source = Array.isArray(data.bases) ? data.bases : [];
   return {
     view: data.view ?? null,
+    diagnostics: {
+      format: data.app === 'Tiamat Web' ? 'Tiamat Web project JSON' : 'DNA JSON',
+      importedBases: source.length,
+      strands: 0,
+      pairs: source.filter((item) => item.across !== null && item.across !== undefined).length / 2
+    },
     bases: source.map((item, index) => ({
       id: Number(item.id ?? index),
       type: normalizeImportedType(item.type ?? typeCodeToBase(item.typeCode)),

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { BASES, CONSTRAINTS, STRAND_COLORS, TIAMAT_GEOMETRY } from './constants.js';
 import { cleanSequence, formatVector } from './geometry.js';
-import { appendImportedDesigns, download, fullProjectJson, mergeImportedDesigns, mergeMetadataFromDna, oxViewJson, parseOxDnaTopConf, parseDnaFile, parseJsonProject, parseOxViewProject, parsePdb, parseSequenceText } from './io.js';
+import { appendImportedDesigns, dnaJson, download, fullProjectJson, mergeImportedDesigns, mergeMetadataFromDna, parseOxDnaTopConf, parseDnaFile, parseJsonProject, parseOxViewProject, parsePdb, parseSequenceText } from './io.js';
 
 const RENDER_SETTINGS_KEY = 'tiamat-web.render-settings.v2';
 
@@ -38,7 +38,7 @@ export function mountApp(root) {
           <label class="buttonLike" for="fileInput">Import</label>
           <label class="buttonLike" for="appendFileInput">Add</label>
           <button data-action="saveProject">Save</button>
-          <button data-action="exportOxView">oxView</button>
+          <button data-action="exportDnaJson">DNA JSON</button>
           <button data-action="exportPng">PNG</button>
         </nav>
         <div id="status" class="status">Ready</div>
@@ -58,20 +58,30 @@ export function mountApp(root) {
           </div>
         </section>
 
-        <details class="panel toolCard">
+        <details class="panel toolCard createPanel">
           <summary><h2>Create</h2></summary>
-          <label>Sequence</label>
-          <textarea id="sequenceInput" spellcheck="false">ATGCGTACGCTA</textarea>
-          <label>Molecule mode</label>
-          <select id="createMoleculeInput">
-            <option value="DNADNAB">DNA/DNA B</option>
-            <option value="DNADNAA">DNA/DNA A</option>
-            <option value="DNARNA">DNA/RNA A</option>
-            <option value="RNADNA">RNA/DNA A</option>
-            <option value="RNARNA">RNA/RNA A</option>
-          </select>
-          <div class="grid2">
-            <label>Bases <input id="baseCountInput" type="number" min="0" step="1" value="0"></label>
+          <div class="segmented createTabs" aria-label="Create commands">
+            <button data-action="createHelix">Helix</button>
+            <button data-action="createLine">Line</button>
+            <button data-action="pairAll">Pair</button>
+          </div>
+          <div class="segmented createTabs" aria-label="Draw commands">
+            <button data-mode="createStrand">Drag</button>
+            <button data-mode="createFreeform">Spline</button>
+            <button data-action="finishFreeform">Finish</button>
+            <button data-action="clearFreeform">Clear</button>
+          </div>
+          <textarea id="sequenceInput" aria-label="Sequence" spellcheck="false">ATGCGTACGCTA</textarea>
+          <div class="grid2 createPrimary">
+            <label>Molecule
+              <select id="createMoleculeInput">
+                <option value="DNADNAB">DNA/DNA B</option>
+                <option value="DNADNAA">DNA/DNA A</option>
+                <option value="DNARNA">DNA/RNA A</option>
+                <option value="RNADNA">RNA/DNA A</option>
+                <option value="RNARNA">RNA/RNA A</option>
+              </select>
+            </label>
             <label>Initial
               <select id="initialModeInput">
                 <option value="sequence">Sequence</option>
@@ -79,26 +89,25 @@ export function mountApp(root) {
                 <option value="random">Random</option>
               </select>
             </label>
+            <label>Bases <input id="baseCountInput" type="number" min="0" step="1" value="0"></label>
             <label>Orientation
               <select id="orientationInput">
                 <option value="forward">5' to 3'</option>
                 <option value="reverse">3' to 5'</option>
               </select>
             </label>
-            <label>Rise <input id="riseInput" type="number" min="0.1" step="0.001" value="0.332"></label>
-            <label>Radius <input id="radiusInput" type="number" min="0" step="0.01" value="1.0"></label>
-            <label>Twist <input id="twistInput" type="number" step="0.1" value="-34.28571"></label>
-            <label>Initial rot <input id="initialRotInput" type="number" step="1" value="0"></label>
-            <label>Snap <input id="snapInput" type="number" min="0.1" step="0.1" value="1"></label>
           </div>
           <label class="checkline"><input id="doubleInput" type="checkbox" checked> Double strand</label>
-          <div class="buttonrow">
-            <button data-action="createHelix">Helix</button>
-            <button data-action="createLine">Line</button>
-            <button data-action="pairAll">Pair All</button>
-            <button data-action="finishFreeform">Finish Freeform</button>
-            <button data-action="clearFreeform">Clear Freeform</button>
-          </div>
+          <details class="inlineDetails createAdvanced">
+            <summary>Geometry</summary>
+            <div class="grid3 createNumbers">
+              <label>Rise <input id="riseInput" type="number" min="0.1" step="0.001" value="0.332"></label>
+              <label>Radius <input id="radiusInput" type="number" min="0" step="0.01" value="1.0"></label>
+              <label>Twist <input id="twistInput" type="number" step="0.1" value="-34.28571"></label>
+              <label>Rot <input id="initialRotInput" type="number" step="1" value="0"></label>
+              <label>Snap <input id="snapInput" type="number" min="0.1" step="0.1" value="1"></label>
+            </div>
+          </details>
           <div id="createState" class="selection">Create mode idle</div>
         </details>
 
@@ -218,6 +227,12 @@ export function mountApp(root) {
             <button data-transform-tool="rotate">Rotate Gizmo</button>
             <button class="selected" data-transform-tool="off">Off</button>
           </div>
+          <label>Gizmo axes</label>
+          <div class="segmented" aria-label="Transform gizmo axes">
+            <button class="selected" data-transform-axis-mode="world">World</button>
+            <button data-transform-axis-mode="principal">PCA</button>
+          </div>
+          <div id="transformReadout" class="selection">Move 0.000 nm · Δ (0.000, 0.000, 0.000)</div>
           <div class="grid3">
             <label>X <input id="moveX" type="number" step="0.1" value="0"></label>
             <label>Y <input id="moveY" type="number" step="0.1" value="0"></label>
@@ -286,7 +301,7 @@ export function mountApp(root) {
             <label class="buttonLike" for="fileInput">Import</label>
             <label class="buttonLike" for="appendFileInput">Add</label>
             <button data-action="saveProject">Save</button>
-            <button data-action="exportOxView">oxView</button>
+            <button data-action="exportDnaJson">DNA JSON</button>
             <button data-action="exportPng">PNG</button>
           </div>
         </details>
@@ -408,6 +423,11 @@ export class TiamatUI {
         this.setTransformTool(button.dataset.transformTool);
       });
     });
+    document.querySelectorAll('[data-transform-axis-mode]').forEach((button) => {
+      button.addEventListener('click', () => {
+        this.setTransformAxisMode(button.dataset.transformAxisMode);
+      });
+    });
     document.querySelectorAll('[data-render-visible]').forEach((input) => {
       input.addEventListener('change', () => {
         this.scene.setRenderVisibility(input.dataset.renderVisible, input.checked);
@@ -432,7 +452,9 @@ export class TiamatUI {
     this.scene.addEventListener('focus-base', (event) => this.model.select(event.detail.id));
     this.scene.addEventListener('select-box', (event) => this.applySelection(event.detail.ids, event.detail.additive));
     this.scene.addEventListener('render-settings', (event) => this.syncRenderButtons(event.detail));
+    this.scene.addEventListener('view-change', (event) => this.syncViewButtons(event.detail));
     this.scene.addEventListener('constraint-blocked', () => this.status('Transform blocked by Tiamat constraints'));
+    this.scene.addEventListener('transform-progress', (event) => this.updateTransformReadout(event.detail));
     this.scene.addEventListener('add-base', (event) => {
       this.model.commit('add base');
       const base = this.model.createBase({
@@ -501,7 +523,7 @@ export class TiamatUI {
 
   action(action) {
     const options = this.readCreateOptions();
-    const sequence = cleanSequence(document.querySelector('#sequenceInput').value, this.molecule);
+    const sequence = this.createSequence(options);
     if (action === 'createHelix') this.status(`Created ${this.model.createHelix(sequence, options)} bp helix`);
     if (action === 'createLine') this.status(`Created ${this.model.createLine(sequence, options)} base strand`);
     if (action === 'pairAll') this.status(`Created ${this.model.pairAll()} complementary bases`);
@@ -528,9 +550,9 @@ export class TiamatUI {
     if (action === 'deleteSlide') this.model.deleteConnection('slide');
     if (action === 'deleteSticky') this.model.deleteConnection('sticky');
     if (action === 'translate') this.translate();
-    if (action === 'rotateX') this.model.rotateSelected('x', document.querySelector('#rotateDeg').value);
-    if (action === 'rotateY') this.model.rotateSelected('y', document.querySelector('#rotateDeg').value);
-    if (action === 'rotateZ') this.model.rotateSelected('z', document.querySelector('#rotateDeg').value);
+    if (action === 'rotateX') this.rotateSelected('x');
+    if (action === 'rotateY') this.rotateSelected('y');
+    if (action === 'rotateZ') this.rotateSelected('z');
     if (action === 'undo') this.model.undo();
     if (action === 'redo') this.model.redo();
     if (action === 'copy') this.copySelection();
@@ -543,19 +565,37 @@ export class TiamatUI {
     if (action === 'viewSide') this.setView('side');
     if (action === 'clearDesign') this.clearDesign();
     if (action === 'saveProject') download(this.model.fileName, fullProjectJson(this.model, this.scene.viewState()), 'application/json');
-    if (action === 'exportOxView') download('tiamat-export.oxview', oxViewJson(this.model), 'application/json');
+    if (action === 'exportDnaJson') download('tiamat-export.dnajson', dnaJson(this.model), 'application/json');
     if (action === 'exportPng') download('tiamat-render.png', dataUrlToBlob(this.scene.exportPng()), 'image/png');
     this.scene.setInteractionMode(this.mode, this.snap());
     this.updateInteractionHint();
   }
 
+  createSequence(options) {
+    const raw = document.querySelector('#sequenceInput').value;
+    const clean = cleanSequence(raw, options.molecule);
+    const count = Math.max(0, Math.floor(Number(options.baseCount) || 0));
+    const targetLength = count || clean.length;
+    if (!targetLength) return clean;
+    if (options.initialMode === 'blank') return 'X'.repeat(targetLength);
+    if (options.initialMode === 'random') return randomSequence(targetLength, options.molecule);
+    return fitSequenceLength(clean, targetLength);
+  }
+
   setView(view) {
     this.scene.setViewMode(view);
+    this.syncViewButtons();
+    this.status(view === 'quad' ? '4 Views' : `${view[0].toUpperCase()}${view.slice(1)} view`);
+  }
+
+  syncViewButtons(state = null) {
+    const viewMode = state?.mode ?? this.scene.viewMode;
+    const activeView = state?.activeView ?? this.scene.activeView;
     document.querySelectorAll('.viewTools [data-action]').forEach((button) => {
       const target = button.dataset.action.replace('view', '').toLowerCase();
-      button.classList.toggle('selected', target === view || (view === 'quad' && target === 'quad'));
+      button.classList.toggle('selected', target === viewMode || (viewMode === 'quad' && target === 'quad'));
+      button.classList.toggle('active-view', target === activeView && viewMode === 'quad');
     });
-    this.status(view === 'quad' ? '4 Views' : `${view[0].toUpperCase()}${view.slice(1)} view`);
   }
 
   setMode(mode) {
@@ -575,6 +615,14 @@ export class TiamatUI {
     });
     this.scene.setTransformTool(tool);
     this.status(tool === 'off' ? 'Transform gizmo off' : `${tool[0].toUpperCase()}${tool.slice(1)} gizmo`);
+  }
+
+  setTransformAxisMode(mode) {
+    document.querySelectorAll('[data-transform-axis-mode]').forEach((button) => {
+      button.classList.toggle('selected', button.dataset.transformAxisMode === mode);
+    });
+    this.scene.setTransformAxisMode(mode);
+    this.status(mode === 'principal' ? 'PCA gizmo axes enabled' : 'World gizmo axes enabled');
   }
 
   syncModeButtons() {
@@ -609,6 +657,7 @@ export class TiamatUI {
       this.model.deleteSelected();
     });
     if (shortcut && key === 'v') return this.consume(event, () => this.pasteSelection());
+    if (shortcut && key === 'o') return this.consume(event, () => document.querySelector('#fileInput')?.click());
     if (shortcut && key === 'a') return this.consume(event, () => this.model.selectAll());
     if (event.key === 'Delete' || event.key === 'Backspace') return this.consume(event, () => this.model.deleteSelected());
     if (event.key === 'Escape') return this.consume(event, () => {
@@ -660,11 +709,47 @@ export class TiamatUI {
   }
 
   translate() {
-    this.model.translateSelected(new THREE.Vector3(
+    const delta = new THREE.Vector3(
       Number(document.querySelector('#moveX').value) || 0,
       Number(document.querySelector('#moveY').value) || 0,
       Number(document.querySelector('#moveZ').value) || 0
-    ));
+    );
+    this.model.translateSelected(delta);
+    this.updateTransformReadout({
+      tool: 'translate',
+      axisMode: this.scene.transformAxisMode,
+      dx: delta.x,
+      dy: delta.y,
+      dz: delta.z,
+      distance: delta.length(),
+      angleDeg: 0
+    });
+  }
+
+  updateTransformReadout(detail = {}) {
+    const target = document.querySelector('#transformReadout');
+    if (!target) return;
+    const dx = Number(detail.dx) || 0;
+    const dy = Number(detail.dy) || 0;
+    const dz = Number(detail.dz) || 0;
+    const distance = Number(detail.distance) || 0;
+    const angle = Number(detail.angleDeg) || 0;
+    const axes = detail.axisMode === 'principal' ? 'principal' : 'world';
+    target.textContent = detail.tool === 'rotate'
+      ? `Rotate ${angle.toFixed(2)}° · ${axes} axes${detail.axis ? ` · ${detail.axis.toUpperCase()}` : ''}`
+      : `Move ${distance.toFixed(3)} nm · Δ (${dx.toFixed(3)}, ${dy.toFixed(3)}, ${dz.toFixed(3)}) · ${axes}`;
+  }
+
+  rotateSelected(axisName) {
+    const degrees = Number(document.querySelector('#rotateDeg').value) || 0;
+    const axis = this.scene.axisVector(axisName);
+    this.model.rotateSelected(axis, degrees);
+    this.updateTransformReadout({
+      tool: 'rotate',
+      axisMode: this.scene.transformAxisMode,
+      axis: axisName,
+      angleDeg: degrees
+    });
   }
 
   readSequenceDesignOptions() {
@@ -924,6 +1009,7 @@ export class TiamatUI {
     this.syncModeButtons();
     this.syncSelectionOperationButtons();
     this.syncColorButtons();
+    this.syncViewButtons();
     document.querySelector('#strandList').innerHTML = strands.map((strand, index) => {
       const head = strand[0];
       return `<button class="strandItem" data-select-strand="${head.id}"><span>${index + 1}${head.circular ? 'c' : ''}: ${strandPreview(strand)}</span><small>${strand.length} bases</small></button>`;
@@ -1139,4 +1225,19 @@ function dataUrlToBlob(dataUrl) {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
   return new Blob([bytes], { type: mime });
+}
+
+function fitSequenceLength(sequence, length) {
+  if (!length) return sequence;
+  if (!sequence) return 'X'.repeat(length);
+  return sequence.repeat(Math.ceil(length / sequence.length)).slice(0, length);
+}
+
+function randomSequence(length, molecule = 'DNA') {
+  const alphabet = molecule === 'RNA' ? 'AUCG' : 'ATCG';
+  let output = '';
+  for (let i = 0; i < length; i += 1) {
+    output += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return output;
 }

@@ -69,6 +69,11 @@ button.last-selection-mode:not(.selected) {
   box-shadow: inset 0 -2px 0 var(--accent);
 }
 
+button.active-view:not(.selected) {
+  border-color: #536875;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
 .workbench {
   display: grid;
   grid-template-columns: 286px minmax(440px, 1fr) 304px;
@@ -273,6 +278,8 @@ details.panel > .buttonrow,
 details.panel > .grid2,
 details.panel > .grid3,
 details.panel > .selection,
+details.panel > .createTabs,
+details.panel > .inlineDetails,
 details.panel > textarea,
 details.panel > select {
   display: grid;
@@ -330,8 +337,13 @@ details[open] summary::after {
 .segmented[aria-label="Geometry"],
 .segmented[aria-label="Simplify mode"],
 .segmented[aria-label="Schematic display"],
-.segmented[aria-label="Selection operation"] {
+.segmented[aria-label="Selection operation"],
+.segmented[aria-label="Create commands"] {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.segmented[aria-label="Draw commands"] {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .buttonrow {
@@ -340,6 +352,46 @@ details[open] summary::after {
 
 .compactActions {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.createPanel textarea {
+  min-height: 32px;
+}
+
+.createPanel > :not(summary) {
+  margin-top: 7px;
+}
+
+.createPanel #createState {
+  min-height: 20px;
+  padding: 4px 8px;
+}
+
+.createPanel .createNumbers {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.createPanel .createNumbers input {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.inlineDetails {
+  gap: 8px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--field), transparent 18%);
+}
+
+.inlineDetails[open] {
+  display: grid;
+}
+
+.inlineDetails > summary {
+  min-height: 18px;
+  color: #cbd6df;
+  font-size: 12px;
 }
 
 .buttonrow button,

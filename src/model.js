@@ -827,7 +827,11 @@ export class TiamatModel extends EventTarget {
     if (!selected.length) return;
     this.commit('rotate');
     const center = this.selectedCenter();
-    const axis = axisName === 'x' ? new THREE.Vector3(1, 0, 0) : axisName === 'z' ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
+    const axis = vectorFrom(
+      typeof axisName === 'string'
+        ? (axisName === 'x' ? { x: 1, y: 0, z: 0 } : axisName === 'z' ? { x: 0, y: 0, z: 1 } : { x: 0, y: 1, z: 0 })
+        : axisName
+    ).normalize();
     const radians = THREE.MathUtils.degToRad(Number(degrees) || 0);
     selected.forEach((base) => {
       base.position = positionFrom(rotatePointAround(base.position, center, axis, radians));

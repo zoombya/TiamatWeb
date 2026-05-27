@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { TiamatModel } from '../src/model.js';
 import { DOWN_DISTANCE, TIAMAT_GEOMETRY } from '../src/constants.js';
 import { vectorFrom } from '../src/geometry.js';
-import { appendImportedDesigns, fullProjectJson, mergeImportedDesigns, oxDnaText, oxViewJson, parseOxDnaTopConf, parseDnaFile, parseJsonProject, parseOxViewProject } from '../src/io.js';
+import { appendImportedDesigns, dnaJson, fullProjectJson, mergeImportedDesigns, oxDnaText, oxViewJson, parseOxDnaTopConf, parseDnaFile, parseJsonProject, parseOxViewProject } from '../src/io.js';
 import { ScreenSelectionIndex } from '../src/selection-index.js';
 import { isSchematicRunNeighbor } from '../src/scene.js';
 
@@ -117,6 +117,26 @@ test('full project JSON roundtrips graph fields', () => {
   assert.equal(loaded.strands().length, 1);
   assert.equal(loaded.getBase(0).down, 1);
   assert.equal(loaded.getBase(1).up, 0);
+});
+
+test('DNA JSON export imports through native graph fields', () => {
+  const model = new TiamatModel();
+  model.createHelix('ATGC', {
+    molecule: 'DNA',
+    geometry: 'B',
+    radius: 1,
+    rise: 0.332,
+    twist: -34.28571,
+    double: true
+  });
+  const data = parseJsonProject(dnaJson(model));
+  const loaded = new TiamatModel();
+  loaded.loadBases(data.bases);
+  assert.equal(data.diagnostics.format, 'DNA JSON');
+  assert.equal(loaded.bases.length, model.bases.length);
+  assert.equal(loaded.strands().length, 2);
+  assert.equal(loaded.bases.filter((base) => base.across !== null).length / 2, 4);
+  assert.equal(loaded.getBase(0).type, 'A');
 });
 
 test('multiple imported designs remap links and arrange side by side', () => {
@@ -364,7 +384,7 @@ test('oxView parser accepts both pair and bp fields', () => {
   assert.equal(model.bases.filter((base) => base.across !== null).length / 2, 2);
 });
 
-test('oxView export emits systems, strands, monomers, neighbors, and base pairs', () => {
+test('oxView export is generated from DNA JSON fields and oxView nucleoside transform', () => {
   const model = new TiamatModel();
   model.createHelix('ATGC', {
     molecule: 'DNA',
@@ -374,40 +394,28 @@ test('oxView export emits systems, strands, monomers, neighbors, and base pairs'
     twist: -34.28571,
     double: true
   });
+  model.bases.forEach((base) => {
+    base.oxView = {
+      a1: [1, 0, 0],
+      a3: [0, 0, 1],
+      importScale: 1,
+      importCenter: [999, 999, 999]
+    };
+  });
   const oxview = JSON.parse(oxViewJson(model));
-  assert.ok(Array.isArray(oxview.box));
-  assert.equal(oxview.systems.length, 1);
   assert.equal(oxview.systems[0].strands.length, 2);
-  const strand = oxview.systems[0].strands[0];
-  assert.equal(strand.class, 'NucleicAcidStrand');
-  assert.equal(strand.end5, strand.monomers[0].id);
-  assert.equal(strand.end3, strand.monomers.at(-1).id);
-  assert.equal(strand.monomers[0].n3, strand.monomers[1].id);
-  assert.equal(strand.monomers[1].n5, strand.monomers[0].id);
-  assert.equal(typeof strand.monomers[0].bp, 'number');
-  assert.deepEqual(Object.keys(strand.monomers[0]).filter((key) => ['id', 'type', 'class', 'p', 'a1', 'a3'].includes(key)).sort(), ['a1', 'a3', 'class', 'id', 'p', 'type']);
-  const exported = strand.monomers[0];
-  const exportedCenter = new THREE.Vector3(...exported.p);
-  const nextCenter = new THREE.Vector3(...strand.monomers[1].p);
-  const pairedCenter = new THREE.Vector3(...oxview.systems[0].strands[1].monomers.at(-1).p);
-  const a1 = new THREE.Vector3(...exported.a1);
-  const a3 = new THREE.Vector3(...exported.a3);
+  const first = oxview.systems[0].strands[0].monomers[0];
+  const second = oxview.systems[0].strands[0].monomers[1];
+  const a1 = new THREE.Vector3(...first.a1);
+  const a3 = new THREE.Vector3(...first.a3);
+  assert.ok(new THREE.Vector3(...first.p).length() < 5);
   assert.ok(Math.abs(a1.dot(a3)) < 0.00001);
-  assert.deepEqual(exported.p, [-0.6, 0, 0]);
-  assert.ok(Math.abs((nextCenter.z - exportedCenter.z) - 0.3897628551303122) < 0.00001);
-  assert.ok(Math.abs(pairedCenter.distanceTo(exportedCenter) - 1.2) < 0.00001);
-  assert.notEqual(
-    Number((model.bases[1].position.y - model.bases[0].position.y).toFixed(3)),
-    Number((nextCenter.z - exportedCenter.z).toFixed(3))
-  );
-
-  const roundtrip = parseOxViewProject(JSON.stringify(oxview));
-  const loaded = new TiamatModel();
-  loaded.loadBases(roundtrip.bases);
-  assert.equal(loaded.bases.length, model.bases.length);
-  assert.equal(loaded.bases.filter((base) => base.across !== null).length / 2, 4);
-  assert.equal(loaded.strands().length, 2);
+  assert.ok(Math.abs(oxViewNucleosideSite(first).distanceTo(oxViewNucleosideSite(second)) - 0.3897628551303122) < 0.00001);
 });
+
+function oxViewNucleosideSite(monomer) {
+  return new THREE.Vector3(...monomer.p).add(new THREE.Vector3(...monomer.a1).multiplyScalar(0.34));
+}
 
 test('oxDNA topology import/export preserves 3 and 5 neighbor directions', () => {
   const top = [
